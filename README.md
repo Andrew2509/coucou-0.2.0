@@ -7,7 +7,9 @@
   
   A tiny, interactive friend that keeps an eye on your AI coding agent sessions. Manage permissions, monitor agent progress, drag-and-drop files, and chat with AI models—all without breaking your flow. Now available for macOS, Windows, Linux, and iOS!
 
-  [![Version](https://img.shields.io/github/v/release/Louis-CFM/coucou?filter=v*&label=version&color=0A84FF)](https://github.com/Louis-CFM/coucou/releases)
+  [![Version](https://img.shields.io/github/v/release/Andrew2509/coucou-0.2.0?filter=v*&label=version&color=0A84FF)](https://github.com/Andrew2509/coucou-0.2.0/releases)
+
+  **[📥 Releases (Hanya aplikasi desktop saja)](https://github.com/Andrew2509/coucou-0.2.0/releases)**
   ![macOS 15+](https://img.shields.io/badge/macOS-15%2B-black?logo=apple)
   ![iOS 18+](https://img.shields.io/badge/iOS-18%2B-black?logo=apple)
   ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows&logoColor=white)
@@ -63,7 +65,7 @@ Take your agent sessions with you. The iOS app tightly integrates into the Apple
 
 ### macOS
 The easiest way is to download the pre-compiled app:
-1. Download `Coucou.zip` from [Releases](https://github.com/Louis-CFM/coucou/releases).
+1. Download `Coucou.zip` from [Releases](https://github.com/Andrew2509/coucou-0.2.0/releases).
 2. Unzip and drag **Coucou.app** to your `/Applications` folder.
 3. Open it! (If macOS prompts you, confirm the opening).
 
@@ -94,7 +96,7 @@ Access **Settings** by clicking the Coucou icon in your menu bar (macOS) or syst
 ### macOS (macOS 15+, Xcode 16+)
 ```bash
 brew install xcodegen
-git clone https://github.com/Louis-CFM/coucou.git
+git clone https://github.com/Andrew2509/coucou-0.2.0.git
 cd coucou/NotchBuddy
 xcodegen
 open NotchBuddy.xcodeproj
@@ -103,7 +105,7 @@ open NotchBuddy.xcodeproj
 ### Windows & Linux (Rust, Node 20+)
 ```bash
 # Requires Rust, Node 20+, and necessary OS build tools
-git clone https://github.com/Louis-CFM/coucou.git
+git clone https://github.com/Andrew2509/coucou-0.2.0.git
 cd coucou/windows
 npm install
 npm run pack
