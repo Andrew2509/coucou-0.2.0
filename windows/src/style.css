@@ -829,6 +829,131 @@ input[type="range"]::-webkit-slider-thumb {
   user-select: text;
 }
 
+/* Markdown rendering inside assistant chat answers. */
+.md-row {
+  width: 100%;
+  user-select: text;
+}
+
+.md {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font: 400 12.5px var(--font);
+  color: #b0b5be;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.md-p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.md-p + .md-p {
+  margin-top: 4px;
+}
+
+.md-h {
+  font-weight: 600;
+  color: var(--ink-2);
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
+.md-h1 { font-size: 14px; }
+.md-h2 { font-size: 13.5px; }
+.md-h3, .md-h4, .md-h5, .md-h6 { font-size: 13px; }
+
+.md-li {
+  display: flex;
+  gap: 6px;
+  position: relative;
+  padding-left: 12px;
+  line-height: 1.5;
+}
+
+.md-li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 7px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--dim-3);
+}
+
+.md-quote {
+  border-left: 2px solid var(--dim-3);
+  padding-left: 8px;
+  color: var(--dim);
+  font-style: italic;
+  line-height: 1.5;
+}
+
+.md-code {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  padding: 0 3px;
+  font: 400 11.5px var(--mono);
+  color: var(--ink-2);
+}
+
+.md-pre {
+  position: relative;
+  margin: 0;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.md-block {
+  display: block;
+  font: 400 11.5px var(--mono);
+  color: var(--ink-2);
+  white-space: pre;
+  line-height: 1.45;
+}
+
+.md-lang {
+  font: 400 10px var(--font);
+  color: var(--dim-2);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 2px;
+}
+
+.md-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--ink-2);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.md-pre:hover .md-copy {
+  opacity: 1;
+}
+
+.md-link {
+  color: #7aa7ff;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .typing {
   display: flex;
   gap: 4px;

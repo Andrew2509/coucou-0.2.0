@@ -24,6 +24,25 @@ pub struct Settings {
     /// is appended to it. AICoding by default; `https://api.anthropic.com` still works.
     #[serde(default = "default_api_base")]
     pub api_base: String,
+    /// Which provider slot is active: `aicoding` (default) | anthropic | openai |
+    /// google | ollama. AICODING and Anthropic share the `/v1/messages` format;
+    /// the rest are OpenAI-compatible.
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    /// Pill shown by default (the one the island opens on): which agent keeps its
+    /// own slot. `integration_claude` is the built-in VS Code pill; other values
+    /// name a `--agent <name>` hook pill such as `agent_cursor`.
+    #[serde(default = "default_main_agent")]
+    pub main_agent: String,
+    /// Per-tool permission override. Keys are tool names, values are
+    /// `"ask" | "allow" | "deny"`. Missing keys mean `"ask"` (the approval
+    /// card). Never stores keys — only these labels.
+    #[serde(default)]
+    pub tool_permissions: std::collections::HashMap<String, String>,
+    /// Privacy-adjacent features, all opt-in. Weekly recap is off until the
+    /// user turns it on and stays local when off.
+    #[serde(default)]
+    pub weekly_recap_enabled: bool,
 }
 
 fn default_model() -> String {
@@ -32,6 +51,14 @@ fn default_model() -> String {
 
 fn default_api_base() -> String {
     crate::claude::DEFAULT_API_BASE.to_string()
+}
+
+fn default_provider() -> String {
+    crate::provider::DEFAULT_PROVIDER.to_string()
+}
+
+fn default_main_agent() -> String {
+    "integration_claude".into()
 }
 
 impl Default for Settings {
@@ -52,6 +79,10 @@ impl Default for Settings {
             hooks_installed: false,
             model: default_model(),
             api_base: default_api_base(),
+            provider: default_provider(),
+            main_agent: default_main_agent(),
+            tool_permissions: std::collections::HashMap::new(),
+            weekly_recap_enabled: false,
         }
     }
 }

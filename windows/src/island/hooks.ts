@@ -86,8 +86,26 @@ const TOOL_LABELS: Record<string, string> = {
   read_file: "Lit",
   list_dir: "Liste",
   write_file: "Écrit",
+  create_file: "Crée",
+  rename_file: "Renomme",
+  move_file: "Déplace",
+  copy_file: "Copie",
+  delete_file: "Supprime",
+  search_files: "Cherche",
   run_python: "Exécute",
+  execute_powershell: "PowerShell",
   web_search: "Recherche web",
+  git_status: "Git",
+  git_diff: "Git diff",
+  git_log: "Git log",
+  git_branch: "Git branche",
+  git_checkout: "Git checkout",
+  git_add: "Git add",
+  git_commit: "Git commit",
+  screenshot: "Capture",
+  open_application: "Ouvre",
+  clipboard_read: "Presse-papiers",
+  clipboard_write: "Presse-papiers",
 };
 
 function stepLabel(tool: string, input: Record<string, unknown>): string {
@@ -99,6 +117,8 @@ function stepLabel(tool: string, input: Record<string, unknown>): string {
   if (path) return `${label} · ${lastPathComponent(path)}`;
   const file = str("file_path");
   if (file) return `${label} · ${lastPathComponent(file)}`;
+  const cwd = str("cwd");
+  if (cwd) return `${label} · ${lastPathComponent(cwd)}`;
   const query = str("query");
   if (query) return `${label} · ${query.slice(0, 40)}`;
   return label;

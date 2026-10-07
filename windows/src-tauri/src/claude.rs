@@ -19,7 +19,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
+
+use futures_util::StreamExt;
 
 use crate::{pipe, secrets};
 
@@ -517,9 +519,23 @@ pub struct ChatReply {
     pub text: String,
 }
 
+/// One streaming chat update, normalised so the island needs no knowledge of
+/// SSE framing. `Text` deltas carry the answer; `Tool` announces a tool that is
+/// about to ask permission; `Done` closes the turn with the assembled text.
+#[derive(Clone, Debug)]
+pub enum ChatEvent {
+    Text(String),
+    Tool { name: String, preview: String },
+    Done(String),
+}
+
+/// Receives chat updates as a stream. A closure or a channel work either way,
+/// so the same `send` drives both the replay tests and the live IPC.
+pub type ChatSink = Box<dyn FnMut(ChatEvent) + Send>;
+
 // ── Endpoint ──────────────────────────────────────────────────────────────────
 
-fn normalise_base(base: &str) -> String {
+pub(crate) fn normalise_base(base: &str) -> String {
     let trimmed = base.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         DEFAULT_API_BASE.to_string()
@@ -584,7 +600,7 @@ pub async fn fetch_models(base: &str, key: &str) -> Result<Vec<String>, String> 
     Ok(ids)
 }
 
-fn first_error_line(text: &str) -> String {
+pub(crate) fn first_error_line(text: &str) -> String {
     serde_json::from_str::<Value>(text)
         .ok()
         .and_then(|v| {
@@ -657,6 +673,200 @@ fn tools() -> Value {
                 },
                 "required": ["query"]
             }
+        },
+        {
+            "name": "create_file",
+            "description": "Create a NEW file with this exact text content. Refuses to overwrite an existing file — use write_file for that.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_path": { "type": "string", "description": "Full path of the file to create." },
+                    "content": { "type": "string", "description": "The whole content of the new file." }
+                },
+                "required": ["file_path", "content"]
+            }
+        },
+        {
+            "name": "rename_file",
+            "description": "Rename (a file or folder) from one full path to another.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Current full path." },
+                    "to": { "type": "string", "description": "New full path." }
+                },
+                "required": ["path", "to"]
+            }
+        },
+        {
+            "name": "move_file",
+            "description": "Move a file or folder to another path. Creates the destination folder if needed and refuses to overwrite.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Current full path." },
+                    "to": { "type": "string", "description": "Destination full path." }
+                },
+                "required": ["path", "to"]
+            }
+        },
+        {
+            "name": "copy_file",
+            "description": "Copy a file to another path. Refuses to overwrite an existing file.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Source full path." },
+                    "to": { "type": "string", "description": "Destination full path." }
+                },
+                "required": ["path", "to"]
+            }
+        },
+        {
+            "name": "delete_file",
+            "description": "Delete a single file. Cannot be undone — the user always confirms this one.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Full path of the file to delete." }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "search_files",
+            "description": "Find files whose name contains a pattern, recursively under a folder. Returns up to 100 matches.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "root": { "type": "string", "description": "Folder to search under." },
+                    "pattern": { "type": "string", "description": "Substring to match, case-insensitive." }
+                },
+                "required": ["root", "pattern"]
+            }
+        },
+        {
+            "name": "execute_powershell",
+            "description": "Run a Windows PowerShell command and return its output. Use it to run the user's project commands, inspect the system, or script anything a terminal can.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "The PowerShell command to run." }
+                },
+                "required": ["command"]
+            }
+        },
+        {
+            "name": "git_status",
+            "description": "Git status, short with the branch: read-only.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cwd": { "type": "string", "description": "Repository folder." }
+                },
+                "required": ["cwd"]
+            }
+        },
+        {
+            "name": "git_diff",
+            "description": "Uncommitted changes (diff), read-only.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cwd": { "type": "string", "description": "Repository folder." }
+                },
+                "required": ["cwd"]
+            }
+        },
+        {
+            "name": "git_log",
+            "description": "The last 20 commits with their messages, read-only.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cwd": { "type": "string", "description": "Repository folder." }
+                },
+                "required": ["cwd"]
+            }
+        },
+        {
+            "name": "git_branch",
+            "description": "List all branches (local and remote), read-only.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cwd": { "type": "string", "description": "Repository folder." }
+                },
+                "required": ["cwd"]
+            }
+        },
+        {
+            "name": "git_checkout",
+            "description": "Switch to a branch. Changing the working tree — ask first.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cwd": { "type": "string", "description": "Repository folder." },
+                    "branch": { "type": "string", "description": "Branch name." }
+                },
+                "required": ["cwd", "branch"]
+            }
+        },
+        {
+            "name": "git_add",
+            "description": "Stage files for the next commit.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cwd": { "type": "string", "description": "Repository folder." },
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Paths to stage." }
+                },
+                "required": ["cwd", "paths"]
+            }
+        },
+        {
+            "name": "git_commit",
+            "description": "Create a commit with the staged changes and this message.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cwd": { "type": "string", "description": "Repository folder." },
+                    "message": { "type": "string", "description": "Commit message." }
+                },
+                "required": ["cwd", "message"]
+            }
+        },
+        {
+            "name": "screenshot",
+            "description": "Capture the primary screen to a PNG under the temp folder and return the file path. Use it to inspect what is on the user's display.",
+            "input_schema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "open_application",
+            "description": "Open an application, document or web URL as if double-clicked in Explorer.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Command line, file path or URL to open." }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "clipboard_read",
+            "description": "Read the current clipboard text.",
+            "input_schema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "clipboard_write",
+            "description": "Put text on the clipboard.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "content": { "type": "string", "description": "Text to copy." }
+                },
+                "required": ["content"]
+            }
         }
     ])
 }
@@ -664,12 +874,28 @@ fn tools() -> Value {
 /// One local tool call: ask the human, then run it. The answer is whatever goes
 /// back into the conversation as the `tool_result`.
 async fn run_tool(app: &AppHandle, name: &str, input: &Value) -> (Value, bool) {
-    if !matches!(name, "read_file" | "list_dir" | "write_file" | "run_python" | "web_search") {
+    if !matches!(
+        name,
+        "read_file" | "list_dir" | "write_file" | "create_file" | "rename_file" | "move_file"
+            | "copy_file" | "delete_file" | "search_files" | "run_python" | "execute_powershell"
+            | "web_search" | "git_status" | "git_diff" | "git_log" | "git_branch"
+            | "git_checkout" | "git_add" | "git_commit" | "screenshot" | "open_application"
+            | "clipboard_read" | "clipboard_write"
+    ) {
         return (json!(format!("Unknown tool: {name}")), true);
     }
     if !approve(app, name, input).await {
         return (json!("Permission denied by the user."), true);
     }
+
+    let preview = input
+        .get("path")
+        .or_else(|| input.get("file_path"))
+        .or_else(|| input.get("query"))
+        .and_then(Value::as_str)
+        .map(|s| s.chars().take(60).collect::<String>())
+        .unwrap_or_default();
+    log_activity(app, name, &preview);
 
     let outcome = if name == "web_search" {
         let query = input
@@ -724,16 +950,124 @@ fn dispatch_local(name: &str, input: &Value) -> Result<String, String> {
                 (_, None) => Err("No content given.".to_string()),
             }
         }
+        "create_file" => {
+            let path = str_arg("file_path").ok_or_else(|| "No path given.".to_string());
+            let content = input.get("content").and_then(Value::as_str).map(str::to_string);
+            match (path, content) {
+                (Ok(path), Some(content)) => create_file_tool(&path, &content),
+                (Err(err), _) => Err(err),
+                (_, None) => Err("No content given.".to_string()),
+            }
+        }
+        "rename_file" => paired_paths(input).and_then(|(from, to)| rename_file_tool(&from, &to)),
+        "move_file" => paired_paths(input).and_then(|(from, to)| move_file_tool(&from, &to)),
+        "copy_file" => paired_paths(input).and_then(|(from, to)| copy_file_tool(&from, &to)),
+        "delete_file" => str_arg("path")
+            .ok_or_else(|| "No path given.".to_string())
+            .and_then(|path| delete_file_tool(&path)),
+        "search_files" => {
+            let root = str_arg("root").ok_or_else(|| "No root given.".to_string());
+            let pattern = str_arg("pattern").ok_or_else(|| "No pattern given.".to_string());
+            match (root, pattern) {
+                (Ok(root), Ok(pattern)) => search_files_tool(&root, &pattern),
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
+        }
         "run_python" => str_arg("command")
             .ok_or_else(|| "No code given.".to_string())
             .and_then(|code| run_python_tool(&code)),
+        "execute_powershell" => str_arg("command")
+            .ok_or_else(|| "No command given.".to_string())
+            .and_then(|cmd| execute_powershell_tool(&cmd)),
+        "git_status" => str_arg("cwd").ok_or_else(|| "No repository path given.".to_string())
+            .and_then(|cwd| git_status_tool(&cwd)),
+        "git_diff" => str_arg("cwd").ok_or_else(|| "No repository path given.".to_string())
+            .and_then(|cwd| git_diff_tool(&cwd)),
+        "git_log" => str_arg("cwd").ok_or_else(|| "No repository path given.".to_string())
+            .and_then(|cwd| git_log_tool(&cwd)),
+        "git_branch" => str_arg("cwd").ok_or_else(|| "No repository path given.".to_string())
+            .and_then(|cwd| git_branch_tool(&cwd)),
+        "git_checkout" => {
+            let cwd = str_arg("cwd").ok_or_else(|| "No repository path given.".to_string());
+            let branch = str_arg("branch").ok_or_else(|| "No branch given.".to_string());
+            match (cwd, branch) {
+                (Ok(cwd), Ok(branch)) => git_checkout_tool(&cwd, &branch),
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
+        }
+        "git_add" => {
+            let cwd = str_arg("cwd").ok_or_else(|| "No repository path given.".to_string());
+            let paths: Option<Vec<String>> = input
+                .get("paths")
+                .and_then(Value::as_array)
+                .map(|arr| arr.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .filter(|p: &Vec<String>| !p.is_empty())
+                .or_else(|| str_arg("path").map(|p| vec![p]));
+            match (cwd, paths) {
+                (Ok(cwd), Some(paths)) => git_add_tool(&cwd, &paths),
+                (Err(e), _) => Err(e),
+                (_, None) => Err("No paths given.".to_string()),
+            }
+        }
+        "git_commit" => {
+            let cwd = str_arg("cwd").ok_or_else(|| "No repository path given.".to_string());
+            let message = str_arg("message").ok_or_else(|| "No commit message given.".to_string());
+            match (cwd, message) {
+                (Ok(cwd), Ok(message)) => git_commit_tool(&cwd, &message),
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
+        }
+        "screenshot" => screenshot_tool(),
+        "open_application" => str_arg("name")
+            .ok_or_else(|| "No application given.".to_string())
+            .and_then(|name| open_application_tool(&name)),
+        "clipboard_read" => clipboard_read_tool(),
+        "clipboard_write" => str_arg("content")
+            .ok_or_else(|| "No content given.".to_string())
+            .and_then(|content| clipboard_write_tool(&content)),
         _ => Err("Unknown tool.".into()),
     }
 }
 
+/// Extracts `path` + `to` from a tool input for two-path operations.
+fn paired_paths(input: &Value) -> Result<(String, String), String> {
+    let path = input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "No path given.".to_string())?;
+    let to = input
+        .get("to")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "No destination given.".to_string())?;
+    Ok((path, to))
+}
+
 /// The island's approval card, reused verbatim: same view, same Allow/Deny, same
 /// pinned island. The payload only says where to go back to afterwards.
+///
+/// Permissions are checked first: a tool the user set to `allow`/`deny` in
+/// Settings never opens a card; everything else (the default) asks.
 async fn approve(app: &AppHandle, name: &str, input: &Value) -> bool {
+    let override_permission = app
+        .state::<crate::Shared>()
+        .settings
+        .lock()
+        .unwrap()
+        .tool_permissions
+        .get(name)
+        .cloned();
+    match override_permission.as_deref() {
+        Some("allow") => return true,
+        Some("deny") => return false,
+        _ => {}
+    }
+
     // The card shows `tool_input` only, so a 40-line script would otherwise be
     // laid out in full. The real input is what gets executed, not this copy.
     let mut display = input.clone();
@@ -855,6 +1189,365 @@ fn write_file_tool(path: &str, content: &str) -> Result<String, String> {
     Ok(format!("Wrote {} bytes to {path}.", bytes.len()))
 }
 
+/// `write_file`, but only creates: refuses to overwrite an existing file, so
+/// "create a new file" can never clobber one.
+fn create_file_tool(path: &str, content: &str) -> Result<String, String> {
+    let file = Path::new(path);
+    if file.exists() {
+        return Err(format!("{path} already exists — use write_file to overwrite it, or pick another name."));
+    }
+    if let Some(parent) = file.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {parent:?}: {e}"))?;
+        }
+    }
+    std::fs::write(file, content.as_bytes()).map_err(|e| format!("cannot create {path}: {e}"))?;
+    Ok(format!("Created {path}."))
+}
+
+fn rename_file_tool(from: &str, to: &str) -> Result<String, String> {
+    std::fs::rename(from, to).map_err(|e| format!("cannot rename {from} → {to}: {e}"))?;
+    Ok(format!("Renamed {from} → {to}."))
+}
+
+fn move_file_tool(from: &str, to: &str) -> Result<String, String> {
+    if Path::new(to).exists() {
+        return Err(format!("{to} already exists — refusing to overwrite it."));
+    }
+    if let Some(parent) = Path::new(to).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {parent:?}: {e}"))?;
+    }
+    std::fs::rename(from, to).map_err(|e| format!("cannot move {from} → {to}: {e}"))?;
+    Ok(format!("Moved {from} → {to}."))
+}
+
+fn copy_file_tool(from: &str, to: &str) -> Result<String, String> {
+    if Path::new(to).exists() {
+        return Err(format!("{to} already exists — refusing to overwrite it."));
+    }
+    std::fs::copy(from, to).map_err(|e| format!("cannot copy {from} → {to}: {e}"))?;
+    Ok(format!("Copied {from} → {to}."))
+}
+
+fn delete_file_tool(path: &str) -> Result<String, String> {
+    let file = Path::new(path);
+    let meta = std::fs::metadata(file).map_err(|e| format!("cannot access {path}: {e}"))?;
+    if meta.is_dir() {
+        return Err(format!("{path} is a folder — Coucou only deletes files from chat. Use a file manager for folders."));
+    }
+    std::fs::remove_file(file).map_err(|e| format!("cannot delete {path}: {e}"))?;
+    Ok(format!("Deleted {path}."))
+}
+
+/// Case-insensitive recursive name search, capped to keep the reply small.
+fn search_files_tool(root: &str, pattern: &str) -> Result<String, String> {
+    let needle = pattern.to_lowercase();
+    let mut out = Vec::new();
+    let mut stack = vec![PathBuf::from(root)];
+    let mut visited = 0usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited > 20_000 {
+                out.push("… searched too many entries, stopped early".into());
+                break;
+            }
+            let path = entry.path();
+            let name = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            if name.to_lowercase().contains(&needle) {
+                out.push(path.to_string_lossy().to_string());
+            }
+            if path.is_dir() {
+                stack.push(path);
+            }
+        }
+        if visited > 20_000 {
+            break;
+        }
+    }
+    if out.is_empty() {
+        return Ok(format!("No files matching \"{pattern}\" under {root}."));
+    }
+    out.truncate(100);
+    Ok(out.join("\n"))
+}
+
+// ── Weekly recap (opt-in) ─────────────────────────────────────────────────────
+
+/// One line per tool run, appended only when the user turned the recap on. The
+/// line holds a timestamp, the tool name and a short preview (a path or query) —
+/// no file contents, no command output. The recap summary is written by the AI
+/// and shown in the island; the raw log stays on this machine.
+fn log_activity(app: &AppHandle, tool: &str, preview: &str) {
+    let enabled = app
+        .state::<crate::Shared>()
+        .settings
+        .lock()
+        .unwrap()
+        .weekly_recap_enabled;
+    if !enabled {
+        return;
+    }
+    let path = crate::settings::local_dir().join("activity.jsonl");
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let entry = serde_json::json!({
+            "ts": ts,
+            "tool": tool,
+            "preview": preview,
+        });
+        let _ = writeln!(file, "{entry}");
+        // Keep the file from growing forever: a little over 12 weeks of daily
+        // activity, in practice tens of KB.
+        if file.metadata().map(|m| m.len() > 1_000_000).unwrap_or(false) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Rounds the summary of the last 7 days up to the model. Returns the recap
+/// text exactly like a chat reply, so the island can show it as a note.
+pub async fn weekly_recap(
+    app: &AppHandle,
+    chat: &Chat,
+    model: &str,
+    api_base: &str,
+) -> Result<String, String> {
+    let _ = app;
+    let path = crate::settings::local_dir().join("activity.jsonl");
+    let body = std::fs::read_to_string(&path).unwrap_or_default();
+    let lines: Vec<&str> = body.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        return Err("No activity collected yet — use the chat a little first, then ask again.".into());
+    }
+    // Take the last 7 days by scanning the timestamps (they sort by append).
+    let week_ago = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+        - 7 * 86400;
+    let events: Vec<&str> = lines
+        .into_iter()
+        .filter(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .ok()
+                .and_then(|v| v.get("ts").and_then(|t| t.as_i64()))
+                .map(|t| t >= week_ago)
+                .unwrap_or(false)
+        })
+        .collect();
+    if events.is_empty() {
+        return Err("No activity in the last 7 days.".into());
+    }
+    let query = format!(
+        "Here is my local activity log for the past week (tool runs only, paths and queries). \
+         Write a short, warm weekly recap in plain text with a title, a headline about what I \
+         focused on, what got done, and one suggestion for next week. Do not invent anything not \
+         in the log.\n\n{}",
+        events.join("\n")
+    );
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sink: ChatSink = Box::new(|_| {});
+    let reply = send(app, chat, model, api_base, query, None, cancel, sink).await?;
+    Ok(reply.text)
+}
+
+/// Runs a PowerShell command without a console window, merging stderr into the
+/// output. The command is exactly what the approval card previewed.
+fn execute_powershell_tool(command: &str) -> Result<String, String> {
+    // On Linux there is no PowerShell by default; pwsh may exist.
+    #[cfg(windows)]
+    let program = PathBuf::from("powershell.exe");
+    #[cfg(not(windows))]
+    let program = match crate::platform::find_on_path("pwsh") {
+        Some(p) => p,
+        None => return Err("PowerShell (pwsh) is not installed on this system.".into()),
+    };
+    let args: Vec<String> = vec![
+        "-NoProfile".into(),
+        "-NonInteractive".into(),
+        "-Command".into(),
+        command.to_string(),
+    ];
+    // run_process_cmd applies CREATE_NO_WINDOW on Windows via platform::no_console.
+    let (text, code) = run_process(&program, &args, TOOL_TIMEOUT)?;
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        if code == 0 {
+            return Ok("(the command produced no output)".into());
+        }
+        return Err(format!("the command exited with code {code} and no output"));
+    }
+Ok(text)
+    }
+
+// ── Windows automation ────────────────────────────────────────────────────────
+
+/// Captures the whole primary screen to a PNG under %TEMP%\coucou_screenshots\
+/// and returns the file path and dimensions. The image itself is a file the
+/// model can open elsewhere; feeding pixels straight into the conversation
+/// needs a richer request builder than tool_result supports today.
+fn screenshot_tool() -> Result<String, String> {
+    let dir = std::env::temp_dir().join("coucou_screenshots");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {dir:?}: {e}"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let dest = dir.join(format!("shot-{stamp}.png"));
+    let dest_str = dest.display().to_string();
+    let script = format!(
+        "
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+$bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+$bmp.Save('{dest_str}', [System.Drawing.Imaging.ImageFormat]::Png)
+$g.Dispose(); $bmp.Dispose()
+Write-Output $bounds.Width x $bounds.Height
+"
+    );
+    let (text, code) = run_process(
+        &PathBuf::from("powershell.exe"),
+        &["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), script],
+        Duration::from_secs(15),
+    )?;
+    if code != 0 || !dest.exists() {
+        return Err(format!("screenshot failed: {}", text.trim()));
+    }
+    Ok(format!("Saved screenshot to {dest_str} ({})", text.trim()))
+}
+
+/// Launches an application by its command or URL. The command is what the card
+/// previewed; it is spawned as-is through `cmd /c start`, so shell shortcuts
+/// and `explorer` URLs work, but arbitrary executables run the same way.
+fn open_application_tool(app_spec: &str) -> Result<String, String> {
+    if app_spec.trim().is_empty() {
+        return Err("No application given.".into());
+    }
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/c", "start", "", app_spec]);
+    let (text, code) = run_process_cmd_no_pipe(&mut cmd, Duration::from_secs(10))?;
+    if code != 0 {
+        return Err(format!("cannot start \"{app_spec}\": {}", text.trim()));
+    }
+    Ok(format!("Started {app_spec}."))
+}
+
+/// Reads the clipboard text via PowerShell.
+fn clipboard_read_tool() -> Result<String, String> {
+    let (text, code) = run_process(
+        &PathBuf::from("powershell.exe"),
+        &["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), "Get-Clipboard -Raw".into()],
+        TOOL_TIMEOUT,
+    )?;
+    let _ = code;
+    Ok(text)
+}
+
+/// Writes the clipboard text via PowerShell.
+fn clipboard_write_tool(content: &str) -> Result<String, String> {
+    // Base64-encode to keep the script a single safe line regardless of content.
+    let b64 = base64(content.as_bytes());
+    let script = format!(
+        "[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{b64}')) | Set-Clipboard"
+    );
+    let (_, code) = run_process(
+        &PathBuf::from("powershell.exe"),
+        &["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), script],
+        TOOL_TIMEOUT,
+    )?;
+    if code != 0 {
+        return Err("Set-Clipboard failed.".into());
+    }
+    Ok("Copied to the clipboard.".into())
+}
+
+/// `cmd /c start` does not wait; use a detached spawn that reports success.
+fn run_process_cmd_no_pipe(cmd: &mut std::process::Command, _timeout: Duration) -> Result<(String, i32), String> {
+    let mut child = crate::platform::no_console(cmd)
+        .spawn()
+        .map_err(|e| format!("cannot start: {e}"))?;
+    let status = child.wait().map_err(|e| format!("cannot wait: {e}"))?;
+    Ok((String::new(), status.code().unwrap_or(-1)))
+}
+
+// ── Git ───────────────────────────────────────────────────────────────────────
+
+/// Runs `git` in `cwd`, merging stderr into the output. Read tools reuse this;
+/// `git_add`/`git_checkout`/`git_commit` ask permission like any other tool.
+fn run_git(cwd: &str, args: &[String], timeout: Duration) -> Result<String, String> {
+    let mut command = std::process::Command::new("git");
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let (text, code) = run_process_cmd(&mut command, timeout)?;
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        if code == 0 {
+            return Ok("(no output)".into());
+        }
+        return Err(format!("git exited with code {code} and no output"));
+    }
+    Ok(text)
+}
+
+fn git_status_tool(cwd: &str) -> Result<String, String> {
+    run_git(cwd, &["status".into(), "--short".into(), "--branch".into()], TOOL_TIMEOUT)
+}
+
+fn git_diff_tool(cwd: &str) -> Result<String, String> {
+    run_git(cwd, &["diff".into()], TOOL_TIMEOUT)
+}
+
+fn git_log_tool(cwd: &str) -> Result<String, String> {
+    run_git(
+        cwd,
+        &[
+            "log".into(),
+            "--oneline".into(),
+            "-20".into(),
+            "--decorate".into(),
+        ],
+        TOOL_TIMEOUT,
+    )
+}
+
+fn git_branch_tool(cwd: &str) -> Result<String, String> {
+    run_git(cwd, &["branch".into(), "-a".into()], TOOL_TIMEOUT)
+}
+
+fn git_checkout_tool(cwd: &str, branch: &str) -> Result<String, String> {
+    run_git(cwd, &["checkout".into(), branch.into()], TOOL_TIMEOUT)
+}
+
+fn git_add_tool(cwd: &str, paths: &[String]) -> Result<String, String> {
+    let mut args = vec!["add".into()];
+    args.extend_from_slice(paths);
+    run_git(cwd, &args, TOOL_TIMEOUT)
+}
+
+fn git_commit_tool(cwd: &str, message: &str) -> Result<String, String> {
+    run_git(
+        cwd,
+        &["commit".into(), "-m".into(), message.into()],
+        TOOL_TIMEOUT,
+    )
+}
+
 // ── Python ────────────────────────────────────────────────────────────────────
 
 /// `python` / `python3` on PATH, then the Windows launcher. The Microsoft Store
@@ -894,9 +1587,16 @@ fn run_process(program: &Path, args: &[String], timeout: Duration) -> Result<(St
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = crate::platform::no_console(&mut command)
+    run_process_cmd(&mut command, timeout)
+}
+
+/// Spawns `command` (already configured) and joins stdout+stderr. `no_console`
+/// keeps the window off on Windows; a caller may add extra flags (e.g. CREATE_NO_WINDOW)
+/// before calling.
+fn run_process_cmd(command: &mut std::process::Command, timeout: Duration) -> Result<(String, i32), String> {
+    let mut child = crate::platform::no_console(command)
         .spawn()
-        .map_err(|e| format!("cannot start {}: {e}", program.display()))?;
+        .map_err(|e| format!("cannot start the process: {e}"))?;
 
     let mut out_pipe = child.stdout.take();
     let mut err_pipe = child.stderr.take();
@@ -1226,6 +1926,8 @@ pub async fn send(
     api_base: &str,
     query: String,
     context: Option<ChatContext>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    mut sink: ChatSink,
 ) -> Result<ChatReply, String> {
     let key = secrets::get("anthropic-api-key")
         .ok_or_else(|| "API key missing. Open settings.".to_string())?;
@@ -1261,6 +1963,10 @@ pub async fn send(
 
     let mut rounds = 0usize;
     loop {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            chat.truncate(mark);
+            return Err("Stopped.".into());
+        }
         let with_tools = rounds < MAX_TOOL_ROUNDS;
         let mut body = json!({
             "model": model,
@@ -1275,7 +1981,16 @@ pub async fn send(
             body["fallbacks"] = json!("default");
         }
 
-        let response = match call(&base, &key, &body, native).await {
+        let response = match call_stream(
+            &base,
+            &key,
+            &body,
+            native,
+            cancel.clone(),
+            &mut sink,
+        )
+        .await
+        {
             Ok(value) => value,
             Err(err) => {
                 chat.truncate(mark);
@@ -1326,6 +2041,16 @@ pub async fn send(
                 .to_string();
             let name = block.get("name").and_then(Value::as_str).unwrap_or_default();
             let input = block.get("input").cloned().unwrap_or_default();
+            // Tell the island which tool is about to ask for permission.
+            let preview = input
+                .get("path")
+                .or_else(|| input.get("file_path"))
+                .or_else(|| input.get("query"))
+                .and_then(Value::as_str)
+                .map(|s| s.chars().take(60).collect::<String>())
+                .unwrap_or_default();
+            sink(ChatEvent::Tool { name: name.to_string(), preview: preview.clone() });
+            log_activity(app, name, &preview);
             let (answer, is_error) = run_tool(app, name, &input).await;
             let mut result = json!({ "type": "tool_result", "tool_use_id": id, "content": answer });
             if is_error {
@@ -1352,34 +2077,184 @@ pub async fn send(
     if text.is_empty() {
         return Err("No response text.".into());
     }
+    // The front end closes on this event; the invoke still resolves with the
+    // final string for the (stream-less) paths that call chat_send directly.
+    sink(ChatEvent::Done(text.clone()));
     Ok(ChatReply { text })
 }
 
-async fn call(base: &str, key: &str, body: &Value, native: bool) -> Result<Value, String> {
+/// Sends the same payload with `stream: true` and feeds the answer to `sink`
+/// as it arrives, token by token. Returns the full response object (content
+/// blocks included) so the caller can pick out tool_use blocks exactly like it
+/// would from a non-streaming call.
+
+/// Sends the same payload with `stream: true` and feeds the answer to `sink`
+/// as it arrives, token by token. Returns the full response object (content
+/// blocks included) so the caller can pick out tool_use blocks exactly like it
+/// would from a non-streaming call.
+///
+/// Two wire formats are understood, because the endpoint decides:
+///   * Anthropic-style SSE: `event:` / `data:` lines with
+///     `content_block_(start|delta|stop)`;
+///   * OpenAI-style SSE: `data: {"choices":[{"delta":{"content":…}}]}`.
+/// Tool-call blocks (Anthropic `tool_use`, OpenAI `tool_calls`) are accumulated
+/// into the returned `content` so the loop above can run them.
+async fn call_stream(
+    base: &str,
+    key: &str,
+    body: &Value,
+    native: bool,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    sink: &mut ChatSink,
+) -> Result<Value, String> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
+        .timeout(Duration::from_secs(120))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let (header, value) = auth_header(base, key);
+    let (header_name, header_value) = auth_header(base, key);
+    let mut full = body.clone();
+    full["stream"] = json!(true);
+    full["stream_options"] = json!({ "include_usage": false });
     let mut request = client
         .post(messages_url(base))
-        .header(header, value)
+        .header(header_name, header_value)
         .header("anthropic-version", ANTHROPIC_VERSION)
         .header("content-type", "application/json")
-        .json(body);
+        .json(&full);
     if native {
         request = request.header("anthropic-beta", FALLBACK_BETA);
     }
 
     let response = request.send().await.map_err(|e| format!("Network error: {e}"))?;
     let status = response.status();
-    let text = response.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
-        // Surface the API's own message, which is what makes a bad key obvious.
+        let text = response.text().await.map_err(|e| e.to_string())?;
         return Err(format!("Claude API {status}: {}", first_error_line(&text)));
     }
-    serde_json::from_str(&text).map_err(|e| format!("Bad API response: {e}"))
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    // Final assistant content blocks (text + tool_use), rebuilt from the stream.
+    let mut blocks: Vec<Value> = Vec::new();
+    // Streaming text, joined for a pure-text answer.
+    let mut streamed_text = String::new();
+    let mut stop_reason = "end_turn".to_string();
+
+    // Anthropic: index → in-progress tool block (id/name/input).
+    // OpenAI: accumulated arguments string per tool call index.
+    let mut tool_blocks: std::collections::HashMap<usize, Value> = Default::default();
+    let mut tool_inputs: std::collections::HashMap<usize, String> = Default::default();
+
+    while let Some(chunk) = stream.next().await {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Stopped.".into());
+        }
+        let bytes = chunk.map_err(|e| format!("stream read error: {e}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
+        while let Some(nl) = buffer.find('\n') {
+            let line = buffer[..nl].to_string();
+            buffer.drain(..=nl);
+
+            let data = line.strip_prefix("data: ").map(str::trim);
+            let Some(data) = data else { continue };
+            if data == "[DONE]" {
+                break;
+            }
+            let Ok(ev) = serde_json::from_str::<Value>(data) else { continue };
+
+            // ── OpenAI-style choice delta ───────────────────────────────────
+            if let Some(content) = ev.pointer("/choices/0/delta/content").and_then(Value::as_str) {
+                if !content.is_empty() {
+                    sink(ChatEvent::Text(content.to_string()));
+                    streamed_text.push_str(content);
+                }
+            }
+            if let Some(calls) = ev.pointer("/choices/0/delta/tool_calls").and_then(Value::as_array) {
+                for call in calls {
+                    let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    if let Some(id) = call.pointer("/id").and_then(Value::as_str) {
+                        tool_blocks.insert(
+                            index,
+                            json!({ "type": "tool_use", "id": id, "name": "", "input": {} }),
+                        );
+                    }
+                    if let Some(name) = call.pointer("/function/name").and_then(Value::as_str) {
+                        if let Some(b) = tool_blocks.get_mut(&index) {
+                            b["name"] = json!(name);
+                        }
+                    }
+                    if let Some(arg) = call.pointer("/function/arguments").and_then(Value::as_str) {
+                        tool_inputs.entry(index).or_default().push_str(arg);
+                    }
+                }
+            }
+
+            // ── Anthropic-style events ───────────────────────────────────────
+            let etype = ev.get("type").and_then(Value::as_str).unwrap_or("");
+            match etype {
+                "content_block_start" => {
+                    let index = ev.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    let block = ev.get("content_block").cloned().unwrap_or_default();
+                    if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                        tool_blocks.insert(index, block);
+                    } else if block.get("type").and_then(Value::as_str) == Some("text") {
+                        if let Some(t) = block.get("text").and_then(Value::as_str) {
+                            if !t.is_empty() {
+                                sink(ChatEvent::Text(t.to_string()));
+                                streamed_text.push_str(t);
+                            }
+                        }
+                    }
+                }
+                "content_block_delta" => {
+                    let index = ev.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    let delta = ev.get("delta").cloned().unwrap_or_default();
+                    if delta.get("type").and_then(Value::as_str) == Some("text_delta") {
+                        if let Some(t) = delta.get("text").and_then(Value::as_str) {
+                            if !t.is_empty() {
+                                sink(ChatEvent::Text(t.to_string()));
+                                streamed_text.push_str(t);
+                            }
+                        }
+                    } else if delta.get("type").and_then(Value::as_str) == Some("input_json_delta") {
+                        if let Some(p) = delta.get("partial_json").and_then(Value::as_str) {
+                            tool_inputs.entry(index).or_default().push_str(p);
+                        }
+                    }
+                }
+                "content_block_stop" => {
+                    // Tool blocks are moved into `blocks` here, complete.
+                    let index = ev.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    if let Some(mut block) = tool_blocks.remove(&index) {
+                        if let Some(raw) = tool_inputs.remove(&index) {
+                            // Merge the accumulated partial JSON into input, if parseable.
+                            if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+                                block["input"] = parsed;
+                            } else {
+                                block["input"] = json!(raw);
+                            }
+                        }
+                        blocks.push(block);
+                    }
+                }
+                "message_delta" => {
+                    if let Some(sr) = ev.pointer("/delta/stop_reason").and_then(Value::as_str) {
+                        stop_reason = sr.to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // If text was streamed but never flushed as a block (pure-text stream),
+    // make a text block so the caller sees the final content.
+    if !streamed_text.is_empty() && blocks.is_empty() {
+        blocks.push(json!({ "type": "text", "text": streamed_text }));
+    }
+
+    Ok(json!({ "stop_reason": stop_reason, "content": blocks }))
 }
 
 /// PDF → document block, image → image block, text/code → inline text.
@@ -1487,5 +2362,43 @@ mod tests {
     #[test]
     fn percent_of_weird() {
         assert_eq!(percent_encode("héllo"), "h%C3%A9llo");
+    }
+
+    #[test]
+    fn filesystem_tools_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("coucou-fs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        let fpath = file.to_str().unwrap();
+
+        write_file_tool(fpath, "hello").unwrap();
+        assert_eq!(read_file_tool(fpath).unwrap().replace("\n", "").trim(), "hello");
+        // create_file refuses to overwrite.
+        assert!(create_file_tool(fpath, "again").is_err());
+        let fresh = dir.join("b.txt");
+        create_file_tool(fresh.to_str().unwrap(), "new").unwrap();
+        // rename + move + copy.
+        let renamed = dir.join("c.txt");
+        rename_file_tool(fresh.to_str().unwrap(), renamed.to_str().unwrap()).unwrap();
+        let moved = dir.join("sub").join("d.txt");
+        move_file_tool(fpath, moved.to_str().unwrap()).unwrap();
+        assert!(moved.exists());
+        let copy = dir.join("e.txt");
+        copy_file_tool(moved.to_str().unwrap(), copy.to_str().unwrap()).unwrap();
+        assert!(copy.exists());
+        // search finds them.
+        let hits = search_files_tool(dir.to_str().unwrap(), "e.txt").unwrap();
+        assert!(hits.contains("e.txt"), "got: {hits}");
+        // delete only files.
+        assert!(delete_file_tool(dir.to_str().unwrap()).is_err());
+        delete_file_tool(copy.to_str().unwrap()).unwrap();
+        assert!(!copy.exists());
+
+        // write_file is the only one that refuses nothing (overwrites).
+        write_file_tool(fpath, "again").unwrap();
+        delete_file_tool(fpath).unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

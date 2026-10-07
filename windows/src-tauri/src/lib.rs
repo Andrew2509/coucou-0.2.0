@@ -8,6 +8,7 @@ mod island;
 mod log;
 mod pipe;
 mod platform;
+mod provider;
 mod secrets;
 mod settings;
 mod tray;
@@ -30,6 +31,8 @@ use settings::Settings;
 pub struct Shared {
     pub settings: Mutex<Settings>,
     pub gate: Arc<PollGate>,
+    /// Set by `chat_cancel`; a running `chat_send` stops as soon as it sees it.
+    pub chat_cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -233,9 +236,9 @@ fn approval_decline(app: AppHandle, request_id: String) {
 
 // ── Chat, files and secrets ───────────────────────────────────────────────────
 
-/// One chat turn. The API key and any file bytes stay on the Rust side. Runs
-/// its own permission cards through the relay, so nothing about a tool call
-/// crosses the IPC boundary except the Allow/Deny the user actually gave.
+/// One chat turn, streamed. The API key and any file bytes stay on the Rust
+/// side, permission cards reuse the relay, and the answer arrives as a series
+/// of `chat-update` events (`text` deltas, `tool` announcements, final `done`).
 #[tauri::command]
 async fn chat_send(
     app: AppHandle,
@@ -244,11 +247,54 @@ async fn chat_send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
+    let (model, api_base, provider) = {
+        let settings = shared.settings.lock().unwrap();
+        (settings.model.clone(), settings.api_base.clone(), settings.provider.clone())
+    };
+    if !provider::is_anthropic_format(&provider) {
+        return Err(format!(
+            "{} chat is not wired up yet — switch back to AICODING in Settings.",
+            provider::label(&provider)
+        ));
+    }
+    shared.chat_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+    let cancel = shared.chat_cancel.clone();
+
+    let island = app.get_webview_window(island::WINDOW_LABEL);
+    let sink: claude::ChatSink = Box::new(move |event| {
+        let payload = match event {
+            claude::ChatEvent::Text(text) => serde_json::json!({ "kind": "text", "text": text }),
+            claude::ChatEvent::Tool { name, preview } =>
+                serde_json::json!({ "kind": "tool", "name": name, "preview": preview }),
+            claude::ChatEvent::Done(text) => serde_json::json!({ "kind": "done", "text": text }),
+        };
+        if let Some(win) = &island {
+            let _ = win.emit("chat-update", payload);
+        }
+    });
+
+    claude::send(&app, &chat, &model, &api_base, query, context, cancel, sink).await
+}
+
+/// Asks a running `chat_send` to stop at the next safe point.
+#[tauri::command]
+fn chat_cancel(shared: State<Shared>) {
+    shared.chat_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Weekly recap (opt-in): summarises the last 7 days of local tool activity
+/// through the configured provider and returns the recap text.
+#[tauri::command]
+async fn weekly_recap(
+    app: AppHandle,
+    shared: State<'_, Shared>,
+    chat: State<'_, Chat>,
+) -> Result<String, String> {
     let (model, api_base) = {
         let settings = shared.settings.lock().unwrap();
         (settings.model.clone(), settings.api_base.clone())
     };
-    claude::send(&app, &chat, &model, &api_base, query, context).await
+    claude::weekly_recap(&app, &chat, &model, &api_base).await
 }
 
 /// The model list the settings window offers, read from the configured endpoint
@@ -259,8 +305,24 @@ async fn fetch_models(
 ) -> Result<Vec<String>, String> {
     let key = secrets::get("anthropic-api-key")
         .ok_or_else(|| "No API key stored yet.".to_string())?;
-    let base = shared.settings.lock().unwrap().api_base.clone();
-    claude::fetch_models(&base, &key).await
+    let (base, provider) = {
+        let settings = shared.settings.lock().unwrap();
+        (settings.api_base.clone(), settings.provider.clone())
+    };
+    provider::list_models(&provider, &base, &key).await
+}
+
+/// Settings → Test Connection: probes the configured provider and reports OK
+/// or the endpoint's own error.
+#[tauri::command]
+async fn test_connection(shared: State<'_, Shared>) -> Result<(), String> {
+    let key = secrets::get("anthropic-api-key")
+        .ok_or_else(|| "No API key stored yet.".to_string())?;
+    let (base, provider) = {
+        let settings = shared.settings.lock().unwrap();
+        (settings.api_base.clone(), settings.provider.clone())
+    };
+    provider::test_connection(&provider, &base, &key).await
 }
 
 #[tauri::command]
@@ -389,6 +451,7 @@ pub fn run() {
         .manage(Shared {
             settings: Mutex::new(loaded.clone()),
             gate: gate.clone(),
+            chat_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
         .manage(Pending::default())
         .manage(Chat::default())
@@ -411,7 +474,10 @@ pub fn run() {
             log_line,
             chat_send,
             chat_reset,
+            chat_cancel,
             fetch_models,
+            test_connection,
+            weekly_recap,
             ingest_file,
             secret_present,
             secret_set,

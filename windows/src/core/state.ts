@@ -99,6 +99,15 @@ export interface Settings {
   model: string;
   /** Base URL of the Anthropic-format endpoint the chat talks to. */
   apiBase: string;
+  /** AI provider slot: "aicoding" (default) | "anthropic" | "openai" | "google" | "ollama". */
+  provider: string;
+  /** Pill the island opens on and keeps a slot for, even when `--agent` hooks
+   *  run. `integration_claude` is the built-in VS Code pill. */
+  mainAgent: string;
+  /** Per-tool permission override: tool name → "ask" | "allow" | "deny". */
+  toolPermissions: Record<string, string>;
+  /** Weekly recap opt-in (stays local until enabled). */
+  weeklyRecapEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -114,6 +123,10 @@ export const DEFAULT_SETTINGS: Settings = {
   hooksInstalled: false,
   model: "sonnet-5",
   apiBase: "https://partner.api-github.com",
+  provider: "aicoding",
+  mainAgent: "integration_claude",
+  toolPermissions: {},
+  weeklyRecapEnabled: false,
 };
 
 type Listener = () => void;
@@ -207,7 +220,7 @@ class AppState {
     this.notify();
   }
 
-  /** loadIntegrationTasks() — VS Code always on, the rest opt-in (max 4). */
+  /** loadIntegrationTasks() — the main agent is always on, the rest opt-in (max 4). */
   loadIntegrationTasks() {
     for (const proto of INTEGRATION_AGENTS) {
       const shouldLoad =
@@ -232,7 +245,13 @@ class AppState {
       // both known integrations → declaration order
       return order.indexOf(a.id) - order.indexOf(b.id);
     });
-    if (!this.focusId) this.focusId = "integration_claude";
+    // Focus the pill the user picked as their main agent when nothing else has
+    // claimed the focus yet. Falls back to the first task if the main agent has
+    // no pill (a `--agent <name>` hook that has not fired in this session).
+    if (!this.focusId) {
+      const main = this.tasks.find((t) => t.id === this.settings.mainAgent) ?? this.tasks[0];
+      this.focusId = main?.id ?? "integration_claude";
+    }
     this.notify();
   }
 

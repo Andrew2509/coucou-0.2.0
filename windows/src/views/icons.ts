@@ -38,4 +38,6 @@ export const ICONS = {
   stack: "M5 8h14v11.5H5V8zm1.8-3h10.4v1.6H6.8V5zm1.6-2.6h7.2V4H8.4V2.4z",
   // doc.text
   doc: "M6.5 2.6h7l4 4v14.8h-11V2.6zm6.6 1.6v3.3h3.3l-3.3-3.3zM8.6 11h6.8v1.5H8.6V11zm0 3.4h6.8v1.5H8.6v-1.5z",
+  // doc.on.doc (copy). Two stacked squares — outline with handles.
+  copy: "M8.5 8.5h11V21h-11V8.5zm1.9 1.9v8.7h7.2v-8.7h-7.2zM11 4h9.5v12.5l1.5 0V4a1.5 1.5 0 0 0-1.5-1.5h0L11 2.5l-.26 1.48z",
 } as const;

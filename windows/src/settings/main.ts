@@ -194,6 +194,22 @@ function apiSection(hasKey: boolean): HTMLElement {
     spellcheck: "false",
   }) as HTMLInputElement;
 
+  const provider = h("select", {}) as HTMLSelectElement;
+  const PROVIDER_OPTIONS: [string, string][] = [
+    ["aicoding", "AICODING"],
+    ["anthropic", "Anthropic"],
+    ["openai", "OpenAI"],
+    ["google", "Google"],
+    ["ollama", "Ollama"],
+  ];
+  for (const [id, label] of PROVIDER_OPTIONS) provider.append(h("option", { value: id, text: label }));
+  provider.value = settings.provider;
+  provider.addEventListener("change", () => {
+    settings.provider = provider.value;
+    void save();
+    void refreshModels();
+  });
+
   const saveBtn = h("button", { class: "primary", text: "Save key" });
   const clearBtn = h("button", { class: "danger", text: "Remove" });
   const feedback = h("div", {});
@@ -273,6 +289,25 @@ function apiSection(hasKey: boolean): HTMLElement {
     void refreshModels();
   });
 
+  const testBtn = h("button", { text: "Test Connection" });
+  const testStatus = h("div", { class: "hint" });
+  async function runTest() {
+    clear(feedback);
+    testBtn.disabled = true;
+    testStatus.textContent = "Testing…";
+    try {
+      await Bridge.testConnection();
+      testStatus.textContent = "Connected";
+      testStatus.style.color = "#22c55e";
+    } catch (err) {
+      testStatus.textContent = String(err).replace(/^Error:\s*/, "");
+      testStatus.style.color = "#f4505e";
+    } finally {
+      testBtn.disabled = false;
+    }
+  }
+  testBtn.addEventListener("click", () => void runTest());
+
   clearBtn.style.display = hasKey ? "" : "none";
 
   return h(
@@ -280,9 +315,11 @@ function apiSection(hasKey: boolean): HTMLElement {
     {},
     h("h2", {}, dot, h("span", { text: "Claude" })),
     state,
+    h("div", { class: "row" }, h("label", { text: "Provider" }), provider),
     h("div", { class: "row" }, h("label", { text: "API base" }), apiBase),
     h("div", { class: "row" }, h("label", { text: "API key" }), field, saveBtn, clearBtn),
     h("div", { class: "row" }, h("label", { text: "Model" }), model),
+    h("div", { class: "row" }, h("label", { text: "" }), testBtn, testStatus),
     feedback,
   );
 }
@@ -425,6 +462,23 @@ function generalSection(): HTMLElement {
     void save();
   });
 
+  const mainAgent = h("select", {}) as HTMLSelectElement;
+  const AGENTS: [string, string][] = [
+    ["integration_claude", "VS Code"],
+    ["agent_cursor", "Cursor"],
+    ["agent_codex", "Codex"],
+    ["agent_antigravity", "Antigravity"],
+  ];
+  for (const [id, label] of AGENTS) mainAgent.append(h("option", { value: id, text: label }));
+  if (!AGENTS.some(([id]) => id === settings.mainAgent)) {
+    mainAgent.append(h("option", { value: settings.mainAgent, text: settings.mainAgent }));
+  }
+  mainAgent.value = settings.mainAgent;
+  mainAgent.addEventListener("change", () => {
+    settings.mainAgent = mainAgent.value;
+    void save();
+  });
+
   return h(
     "section",
     {},
@@ -433,6 +487,11 @@ function generalSection(): HTMLElement {
       h("label", { text: "Sound" }),
       toggle(settings.soundEnabled, (v) => { settings.soundEnabled = v; void save(); }),
       volume,
+    ),
+    h("div", { class: "row" },
+      h("label", { text: "Main agent" }),
+      mainAgent,
+      h("span", { class: "hint", text: "opened by default" }),
     ),
     h("div", { class: "row" },
       h("label", { text: "Auto-close" }),
@@ -448,6 +507,105 @@ function generalSection(): HTMLElement {
       toggle(settings.autostart, (v) => { settings.autostart = v; void save(); }),
     ),
   );
+}
+
+// ── Permissions section ───────────────────────────────────────────────────────
+
+const TOOL_PERMISSION_OPTIONS: [string, string][] = [
+  ["ask", "Ask each time"],
+  ["allow", "Allow automatically"],
+  ["deny", "Block"],
+];
+
+const TOOL_LABELS: [string, string][] = [
+  ["read_file", "Read file"],
+  ["list_dir", "List folder"],
+  ["write_file", "Write file"],
+  ["create_file", "Create file"],
+  ["rename_file", "Rename file"],
+  ["move_file", "Move file"],
+  ["copy_file", "Copy file"],
+  ["delete_file", "Delete file"],
+  ["search_files", "Search files"],
+  ["run_python", "Run Python"],
+  ["execute_powershell", "Run PowerShell"],
+  ["web_search", "Web search"],
+  ["git_status", "Git status"],
+  ["git_diff", "Git diff"],
+  ["git_log", "Git log"],
+  ["git_branch", "Git branch"],
+  ["git_checkout", "Git checkout"],
+  ["git_add", "Git add"],
+  ["git_commit", "Git commit"],
+  ["screenshot", "Screenshot"],
+  ["open_application", "Open application"],
+  ["clipboard_read", "Read clipboard"],
+  ["clipboard_write", "Write clipboard"],
+];
+
+function permissionsSection(): HTMLElement {
+  const list = h("div", { style: "display:flex;flex-direction:column;gap:8px" });
+  for (const [tool, title] of TOOL_LABELS) {
+    const sel = h("select", {}) as HTMLSelectElement;
+    for (const [val, label] of TOOL_PERMISSION_OPTIONS) {
+      sel.append(h("option", { value: val, text: label }));
+    }
+    sel.value = settings.toolPermissions[tool] ?? "ask";
+    sel.addEventListener("change", () => {
+      settings.toolPermissions = { ...settings.toolPermissions, [tool]: sel.value };
+      void save();
+    });
+    list.append(h("div", { class: "row" }, h("label", { text: title }), sel));
+  }
+  const note = h("div", {
+    class: "hint",
+    text: "By default every tool asks first. \"Allow automatically\" skips the card for that tool; \"Block\" refuses it without asking.",
+  });
+  return h("section", {}, h("h2", {}, h("span", { text: "Permissions" })), note, list);
+}
+
+// ── Privacy section ───────────────────────────────────────────────────────────
+
+function privacySection(): HTMLElement {
+  const wrap = h("div", { style: "display:flex;flex-direction:column;gap:10px" });
+  const recapOut = h("div", { class: "hint" });
+  const recapBtn = h("button", { text: "Run weekly recap", disabled: true });
+
+  function refreshRecap() {
+    recapBtn.disabled = !settings.weeklyRecapEnabled;
+    if (!settings.weeklyRecapEnabled) recapOut.textContent = "";
+  }
+  refreshRecap();
+
+  recapBtn.addEventListener("click", async () => {
+    recapBtn.disabled = true;
+    recapOut.textContent = "Summarising your week…";
+    recapOut.style.whiteSpace = "pre-wrap";
+    try {
+      const recap = await Bridge.weeklyRecap();
+      recapOut.textContent = recap;
+    } catch (err) {
+      recapOut.textContent = String(err).replace(/^Error:\s*/, "");
+    } finally {
+      refreshRecap();
+    }
+  });
+
+  wrap.append(
+    h("div", { class: "hint", text: "No telemetry. The chat only sends your conversation and the files you attach; local tools stay on your machine." }),
+    h("div", { class: "row" },
+      h("label", { text: "Weekly recap" }),
+      toggle(settings.weeklyRecapEnabled, (v) => {
+        settings.weeklyRecapEnabled = v;
+        refreshRecap();
+        void save();
+      }),
+      h("span", { class: "hint", text: "records which tool ran and where (no file contents)" }),
+    ),
+    h("div", { class: "row" }, h("label", { text: "" }), recapBtn),
+    recapOut,
+  );
+  return h("section", {}, h("h2", {}, h("span", { text: "Privacy" })), wrap);
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
@@ -477,6 +635,8 @@ async function main() {
     claudeSection(status),
     apiSection(hasKey),
     integrationsSection(present),
+    permissionsSection(),
+    privacySection(),
     generalSection(),
     h("div", {
       class: "hint",

@@ -81,14 +81,31 @@ whether a key exists. Same for every integration key.
 
 ### The chat has tools
 
-Mochi's chat is not just a chatbox: it can read a file, list a folder, write a
-file and run **Python 3** on your machine, and search the web. Word, Excel,
-PowerPoint, OpenDocument, RTF and PDF are opened by a bundled reader script
+Mochi's chat is not just a chatbox: it can read a file, list a folder, create,
+rename, move, copy and delete files, find files by name, run **Python 3** and
+**PowerShell**, search the web, read and stage Git changes, take a screenshot,
+read/write the clipboard and open an application. Word, Excel, PowerPoint,
+OpenDocument, RTF and PDF are opened by a bundled reader script
 (`%LOCALAPPDATA%\Coucou\bin\coucou_read.py`, standard library only — nothing to
-install). **Every local tool call asks you first**: the island shows the Deny /
-Allow card — with the exact file path, or a preview of the code — and only your
-click lets it run. A tool call without an answer times out in about two minutes
-and the chat says so, instead of hanging.
+install). **Every local tool call asks you first** — the island shows the Deny /
+Allow card with the exact path or a preview of the command — unless you set that
+tool to *Allow automatically* or *Block* in **Settings → Permissions**. A tool
+call without an answer times out in about two minutes and the chat says so,
+instead of hanging.
+
+Multiple AI providers, configurable in **Settings → Claude**:
+- **AICODING** (default): `https://partner.api-github.com`, `sonnet-5`, Bearer key.
+- **Anthropic**: same `messages` format, `https://api.anthropic.com`, `sk-ant-…`.
+- **OpenAI / Google / Ollama**: connection test and model list work; chat for
+  these slots is planned next (switch back to AICODING/Anthropic for now).
+
+Answers stream into the chat token by token, render as light markdown — bold,
+lists, headings, quotes and code blocks with a copy button — and only web links
+(http/https) open, through the island. You can stop a reply from the send button.
+
+Optional **weekly recap** (Settings → Privacy → Run weekly recap): with the
+toggle on, Coucou records *which* tool ran and *where* (never file contents) for
+seven days, then asks the provider for a short summary.
 
 No telemetry. The only network requests Coucou makes are to the services you
 configure yourself.
@@ -175,6 +192,9 @@ OpenCode and Amp are not yet supported on Windows or Linux. Their integration us
   the top edge instead of hiding in a notch.
 - Permission approval works from **any** terminal; the Mac build only listens to
   VS Code sessions.
+- Pick your main agent in **Settings → General → Main agent** (VS Code by
+  default, or a `--agent <name>` pill like Cursor, Codex or Antigravity): the
+  island opens on that pill, and it stays on without taking one of the 4 slots.
 - Not in this version: sending a file by email, dragging Mochi onto a window to
   attach it as context, and jumping to a specific terminal window — "Open
   terminal" opens the working folder in VS Code when `code` is on your `PATH`.

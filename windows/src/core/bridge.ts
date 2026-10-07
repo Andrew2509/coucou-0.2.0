@@ -82,11 +82,19 @@ export const Bridge = {
 
   // ── Chat, files, secrets ──────────────────────────────────────────────────
   /** One chat turn. The API key and any file bytes never leave Rust. */
+  /** One chat turn, streamed: the answer arrives as `chat-update` events and
+   *  the promise resolves with the final text. */
   chatSend: (query: string, context: ChatContext | null) =>
     callOrThrow<{ text: string }>("chat_send", { query, context }),
+  /** Stops a running chat at the next safe point. */
+  chatCancel: () => call<void>("chat_cancel"),
   chatReset: () => call<void>("chat_reset"),
   /** Models the configured endpoint actually accepts, for the settings select. */
   fetchModels: () => callOrThrow<string[]>("fetch_models"),
+  /** Settings → Test Connection: OK (()) or the endpoint's own error. */
+  testConnection: () => callOrThrow<void>("test_connection"),
+  /** Weekly recap (opt-in): the summary text, or an honest error when empty. */
+  weeklyRecap: () => callOrThrow<string>("weekly_recap"),
   /** Copies a dropped file into the inbox. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
   /** Only ever tells you whether a key exists — never its value. */
@@ -164,3 +172,15 @@ export async function onEvent<T>(name: string, handler: (payload: T) => void) {
   if (!IS_TAURI) return () => {};
   return listen<T>(name, (e) => handler(e.payload));
 }
+
+/** One incremental piece of a streamed chat answer. */
+export interface ChatUpdate {
+  kind: "text" | "tool" | "done";
+  text?: string;
+  name?: string;
+  preview?: string;
+}
+
+/** Subscribes to streamed chat updates; returns an unlisten function. */
+export const onChatUpdate = (handler: (u: ChatUpdate) => void) =>
+  onEvent<ChatUpdate>("chat-update", handler);
