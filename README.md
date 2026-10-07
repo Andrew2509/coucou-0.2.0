@@ -5,15 +5,13 @@
   
   **Your AI Coding Companion, Living in Your Notch (or Taskbar)**
   
-  A tiny, interactive friend that keeps an eye on your AI coding agent sessions. Manage permissions, monitor agent progress, drag-and-drop files, and chat with AI models—all without breaking your flow. Now available for macOS, Windows, Linux, and iOS!
+  A tiny, interactive friend that keeps an eye on your AI coding agent sessions. Manage permissions, monitor agent progress, drag-and-drop files, and chat with AI models—all without breaking your flow. Now available for macOS and Windows!
 
   [![Version](https://img.shields.io/github/v/release/Andrew2509/coucou-0.2.0?filter=v*&label=version&color=0A84FF)](https://github.com/Andrew2509/coucou-0.2.0/releases)
 
   **[📥 Releases (Hanya aplikasi desktop saja)](https://github.com/Andrew2509/coucou-0.2.0/releases)**
   ![macOS 15+](https://img.shields.io/badge/macOS-15%2B-black?logo=apple)
-  ![iOS 18+](https://img.shields.io/badge/iOS-18%2B-black?logo=apple)
   ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows&logoColor=white)
-  ![Linux](https://img.shields.io/badge/Linux-AppImage%20%7C%20deb%20%7C%20rpm-FCC624?logo=linux&logoColor=black)
   ![License](https://img.shields.io/badge/license-MIT-green)
 
   <br />
@@ -45,22 +43,6 @@ Coucou is fully open-source. Every line of code, animation, and sound is free to
 - **Custom Outfits:** Right-click Mochi to open the wardrobe, or let him dress up automatically for the seasons.
 - **Weekly Recap:** Get a Monday morning summary of your coding time, active sessions, lines changed, and top projects.
 
-## 📱 Coucou on iPhone
-
-Take your agent sessions with you. The iOS app tightly integrates into the Apple ecosystem:
-
-<div align="center">
-  <img src="docs/media/iphone-live-activity.jpg" width="45%" alt="Mochi on the Lock Screen">
-  <img src="docs/media/iphone-approval.jpg" width="45%" alt="Face ID Approval">
-</div>
-
-- **Dynamic Island & Live Activities:** Track agent states on your Lock Screen. **Allow** or **Deny** right from your phone.
-- **Face ID Security:** Securely approve Mac actions with Face ID.
-- **Widgets & Siri:** Access your agent status via Home Screen widgets, Control Center, and Siri shortcuts.
-- **End-to-End Encryption:** Syncs privately via your personal iCloud (CloudKit). No third-party servers.
-
-> Read the full iOS setup guide: [docs/IPHONE.md](docs/IPHONE.md)
-
 ## 📥 Installation
 
 ### macOS
@@ -74,15 +56,9 @@ The easiest way is to download the pre-compiled app:
 ### Windows
 *Note: The Windows installer is temporarily unavailable due to a false-positive Microsoft Defender flag. You can build it from source in the meantime. See [`windows/README.md`](windows/README.md) for details.*
 
-### Linux (Beta)
-Download the `linux-v*` release from GitHub:
-- **AppImage:** `chmod +x Coucou-Linux-*.AppImage && ./Coucou-Linux-*.AppImage`
-- **Debian/Ubuntu:** `sudo apt install ./Coucou-Linux-*.deb`
-- **Fedora/openSUSE:** `sudo dnf install ./Coucou-Linux-*.rpm`
-
 ## ⚙️ Configuration & Setup
 
-Access **Settings** by clicking the Coucou icon in your menu bar (macOS) or system tray (Windows/Linux).
+Access **Settings** by clicking the Coucou icon in your menu bar (macOS) or system tray (Windows).
 
 | Configuration | Description |
 |---|---|
@@ -102,7 +78,7 @@ xcodegen
 open NotchBuddy.xcodeproj
 ```
 
-### Windows & Linux (Rust, Node 20+)
+### Windows (Rust, Node 20+)
 ```bash
 # Requires Rust, Node 20+, and necessary OS build tools
 git clone https://github.com/Andrew2509/coucou-0.2.0.git
