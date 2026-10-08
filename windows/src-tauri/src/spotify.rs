@@ -20,8 +20,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::{platform, secrets};
 
 const REDIRECT_PORT: u16 = 8000;
-/// Loopback IP literal, never `localhost`: Spotify forbids `localhost` as a
-/// redirect URI and only allows HTTP for loopback addresses (RFC 8252).
+/// Loopback IP literal over plain HTTP. Spotify's dashboard refuses http for
+/// a fresh app, but this port already works for this account; the port stays
+/// fixed because the registered redirect URI is an exact match.
 const REDIRECT_URI: &str = "http://127.0.0.1:8000/callback";
 const AUTH_URL: &str = "https://accounts.spotify.com/authorize";
 const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
@@ -63,11 +64,10 @@ fn generate_state() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// A tiny one-shot HTTP server on 127.0.0.1:8000. The redirect URI is the
-/// loopback IP literal `http://127.0.0.1:8000/callback`, which Spotify accepts
-/// over plain HTTP (unlike `localhost`, which it forbids entirely). The port
-/// must stay fixed because the registered redirect URI is exact. Times out if
-/// the tab hangs.
+/// A tiny one-shot HTTP server on 127.0.0.1:8000. The registered redirect URI
+/// is the plain-HTTP loopback `http://127.0.0.1:8000/callback` (this account
+/// accepts it), so no TLS is needed. The port stays fixed because the
+/// dashboard stores the exact URI. Times out if the tab hangs.
 async fn listen_for_code(expected_state: &str, cancel: Arc<AtomicBool>) -> Result<String, String> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", REDIRECT_PORT))
         .await
@@ -389,16 +389,23 @@ pub async fn search_playlists(query: &str) -> Result<String, String> {
 }
 
 /// `spotify_play`: start playback. `uri` is a track/album/playlist URI
-/// (`spotify:track:` or `spotify:playlist:`); device is optional.
+/// (`spotify:track:` or `spotify:playlist:`); an empty `uri` resumes whatever
+/// is paused. Device is optional.
 pub async fn play(uri: &str) -> Result<String, String> {
     let token = access_token().await?;
-    let body = if uri.starts_with("spotify:playlist:") || uri.starts_with("spotify:album:") || uri.starts_with("spotify:artist:") {
-        json!({ "context_uri": uri })
+    let body = if uri.is_empty() {
+        None // resume
+    } else if uri.starts_with("spotify:playlist:") || uri.starts_with("spotify:album:") || uri.starts_with("spotify:artist:") {
+        Some(json!({ "context_uri": uri }))
     } else {
-        json!({ "uris": [uri] })
+        Some(json!({ "uris": [uri] }))
     };
-    api(&token, "PUT", "/me/player/play", Some(body)).await?;
-    Ok(format!("Playing {uri}."))
+    api(&token, "PUT", "/me/player/play", body).await?;
+    Ok(if uri.is_empty() {
+        "Resumed playback.".into()
+    } else {
+        format!("Playing {uri}.")
+    })
 }
 
 pub async fn pause() -> Result<String, String> {

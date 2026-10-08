@@ -8,6 +8,11 @@ const SERVICE: &str = "fr.louisraille.coucou";
 /// Every key Coucou may store. Anything outside this list is refused.
 pub const KNOWN_KEYS: &[&str] = &[
     "anthropic-api-key",
+    "aicoding-api-key",
+    "openai-api-key",
+    "google-api-key",
+    "openrouter-api-key",
+    "openai-compatible-key",
     "n8n-url",
     "n8n-api-key",
     "vercel-token",
@@ -20,6 +25,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "spotify-access-token",
     "spotify-refresh-token",
     "spotify-token-expiry",
+    "stt-api-key",
 ];
 
 fn entry(key: &str) -> Option<Entry> {

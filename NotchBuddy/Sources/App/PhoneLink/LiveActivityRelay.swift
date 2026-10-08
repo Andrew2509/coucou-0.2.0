@@ -186,6 +186,7 @@ final class LiveActivityRelay {
     // MARK: Sending
 
     private func begin(_ state: MochiActivityState) {
+        guard !DemoEngine.shared.isActive else { return }
         let start = Date()
         activitySince = Int(start.timeIntervalSince1970)
         startedAt = start
@@ -217,6 +218,7 @@ final class LiveActivityRelay {
 
     /// Sends the latest state if it changed, one request at a time.
     private func flush() {
+        guard !DemoEngine.shared.isActive else { return }
         guard !sending, let startedAt, let state = latest, state != sent else { return }
         sending = true
         Task {

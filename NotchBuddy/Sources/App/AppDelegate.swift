@@ -5,8 +5,10 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     private(set) var islandController: IslandWindowController?
+    private var demoMenuItem: NSMenuItem?
 
     func applicationWillTerminate(_ notification: Notification) {
+        DemoEngine.shared.stop()
         HotKeyCenter.shared.unregisterAll()
     }
 
@@ -30,6 +32,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openIsland()
+        return true
+    }
+
     // MARK: - Menu bar
 
     private func setupMenuBarItem() {
@@ -41,6 +48,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.image?.isTemplate = true
 
         let menu = NSMenu()
+        menu.delegate = self
+        let demoItem = NSMenuItem(title: NSLocalizedString("Demo mode", comment: ""), action: #selector(toggleDemoMode), keyEquivalent: "")
+        demoMenuItem = demoItem
+        menu.addItem(demoItem)
+        menu.addItem(.separator())
         menu.addItem(withTitle: NSLocalizedString("Open Coucou", comment: ""), action: #selector(openIsland), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: NSLocalizedString("Weekly recap", comment: ""), action: #selector(openWeeklyRecap), keyEquivalent: "")
@@ -53,7 +65,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Actions
 
+    @objc private func toggleDemoMode() {
+        if DemoEngine.shared.isActive { DemoEngine.shared.stop() }
+        else { DemoEngine.shared.start() }
+    }
+
     @objc private func openIsland() {
+        islandController?.fsm.openedExternally()
         islandController?.expand(to: .overview)
     }
 
@@ -94,10 +112,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Centres the window horizontally and keeps its title bar clear of the island panel
-    /// (320 pt tall at the top of the notch screen), shrinking it to fit if needed.
+    /// (320 pt tall at the top of the island screen), shrinking it to fit if needed.
     private func placeBelowIsland(_ win: NSWindow) {
-        let screen = IslandWindowController.notchScreen() ?? NSScreen.main ?? win.screen
-        guard let screen else { win.center(); return }
+        let screen = IslandWindowController.islandScreen()
         let visible = screen.visibleFrame
         let islandBottom = screen.frame.maxY - 320 - 12   // island panel height + margin
         let top = min(visible.maxY, islandBottom)
@@ -197,5 +214,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #if !APPSTORE
         _ = MusicController.shared
         #endif
+    }
+}
+
+// MARK: - NSMenuDelegate
+
+extension AppDelegate: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        demoMenuItem?.title = DemoEngine.shared.isActive
+            ? NSLocalizedString("demo.stop", comment: "")
+            : NSLocalizedString("Demo mode", comment: "")
     }
 }

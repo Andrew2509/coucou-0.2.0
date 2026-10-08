@@ -42,6 +42,8 @@ final class QuestionRelay {
     }
 
     private func pendingChanged(to payload: QuestionPayload?) {
+        // Never publish demo questions (they have no real fd in HookServer)
+        if payload != nil, !HookServer.shared.hasRealPendingQuestion { return }
         let fingerprint = payload?.fingerprint
         guard current?.fingerprint != fingerprint else { return }
         pollTask?.cancel()

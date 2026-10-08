@@ -17,24 +17,35 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-tokio = { version = "1", features = ["net", "io-util", "sync", "time", "rt"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["net", "io-util", "sync", "time", "rt", "process"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "multipart"] }
 futures-util = "0.3"
-# OS CSPRNG for the PKCE verifier / state nonce. No extra platform logic needed.
+
+# Voice capture (cpal + hound) and PKCE for the Spotify connector. Used on
+# every platform; cpal/hound are cross-platform.
+cpal = "0.16"
+hound = "3.5"
 getrandom = "0.2"
-# PKCE code_challenge = base64url(SHA-256(verifier)). Spotify only supports S256.
 sha2 = "0.10"
 base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+# The island's file drop reads paths straight from WebView2 (webview_drop.rs).
+# Same versions as wry, so nothing new is compiled.
+webview2-com = "0.39"
+wv2_core = { package = "windows-core", version = "0.62" }
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Security_Authorization",
+  # "Open terminal": the relay's process tree leads to the session's window.
+  "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Ole",
+  "Win32_System_Pipes",
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",

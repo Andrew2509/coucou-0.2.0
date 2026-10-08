@@ -1,125 +1,134 @@
-# Coucou Windows × AICODING — Architecture Audit
+# Coucou Windows × AICODING — Architecture
 
-Terakhir diperbarui: fase roadmap *Coucou Windows — AICODING Desktop Agent*.
+Last updated: Phase 2 (Spotify chat tools) completed.
 
-## 1. Tujuan
+## 1. Purpose
 
-Coucou Windows diarahkan menjadi *AI desktop agent* dengan **AICODING sebagai
-AI provider utama**, Coucou sebagai interface + agent runtime, dan Windows
-sebagai execution environment. PRD lengkap mengacu ke dokumen konsep
-(AICODING Desktop Agent). Dokumen ini adalah peta arsitektur dari repo yang
-sudah ada — apa yang bisa dipakai ulang, apa yang belum ada.
+Coucou Windows is an AI desktop agent interface. **AICODING** (`https://partner.api-github.com`) is the default chat provider over Anthropic's `/v1/messages` wire. The Tauri backend (`windows/src-tauri/src/`) runs a tool loop with **explicit approval before every local tool call** (reads included). The frontend (`windows/src/`) shows an approval card on the island and lets the user Allow/Deny per request.
 
-## 2. Layout repo
+## 2. Layout
 
-```
-coucou-0.2.0/
-  NotchBuddy/            macOS app (Swift) — di luar cakupan Windows
-  windows/               Tauri app (Windows + Linux)
-    src/                 front end TypeScript (tanpa framework)
-      core/              state (state.ts), bridge (bridge.ts), layout, sound
-      island/            fsm, hooks handling (hooks.ts), integrations
-      mochi/             Mochi + greeting (Canvas 2D)
-      views/             semua island view (chat, approval, upload, …)
-      settings/          jendela settings
-      upload/            animasi file drop
-    src-tauri/src/       backend Rust
-      claude.rs          AI chat + tool calling + dokumen reader
-      hooks.rs           instalasi Claude Code hooks
-      pipe.rs            named pipe relay (coucou-hook)
-      integrations.rs    poller n8n/GitHub/… 
-      files.rs           file drop ingest
-      secrets.rs         Credential Manager (Windows) / Keyring (Linux)
-      settings.rs        preferensi JSON
-      platform/          windows.rs & linux.rs
-    hook/                coucou-hook (relay executable)
-  docs/                  dokumen (macOS-centric)
+```text
+windows/
+  src/                    TypeScript (no framework)
+    core/providers.ts     provider registry (includes "aicoding")
+    island/agents.ts      APPROVAL_AGENTS + CHAT_AGENT = "aicoding"
+    island/hooks.ts       approval labels/fields + step labels
+    i18n/                 strings.json (MAC) + extra.json (Windows-only)
+    settings/main.ts      Settings UI (Chat providers, Spotify, etc.)
+  src-tauri/src/
+    chat.rs               provider routing + model selection
+    claude.rs             Anthropic/AICODING wires, tools_for, TOOLS_NOTE, loop
+    chat_tools.rs          local tool registry (10 tools), approval display
+    spotify.rs            Spotify OAuth PKCE + Web API (current/search/play/pause/next/prev/queue)
+    lib.rs                Tauri commands, approval intercepts, chat_send
+    hooks.rs              Claude Code hook installer/logic
+    pipe.rs               named pipe relay (coucou-hook)
+    secrets.rs            Credential Manager (Windows) / Keyring (Linux)
+    settings.rs           persisted settings JSON
+    i18n.rs               translations (Rust)
+    platform/             windows.rs / linux.rs
+docs/WINDOWS-AICODING.md  (this document)
 ```
 
-## 3. AI provider: status saat ini
+## 3. Providers
 
-| Kebutuhan PRD | Status | Lokasi |
-|---|---|---|
-| Base URL configurable | ✅ | `Settings.api_base` (settings.rs), dikirim ke `claude::send` |
-| API key secure | ✅ | `secrets.rs` (Credential Manager), tidak pernah ke frontend |
-| Model configurable | ✅ | `Settings.model`, default `sonnet-5` |
-| Model list dari endpoint | ✅ | `fetch_models` (claude.rs) | 
-| Chat (non-stream) | ✅ | `chat_send` → `claude::send` |
-| Tool calling (read/write/list/python/web) | ✅ | `claude.rs` `run_tool` loop + approval card |
-| Dokumen (PDF/DOCX/PPTX/XLSX/ODF/RTF) | ✅ | Reader Python `coucou_read.py` |
-| **Streaming (SSE incremental)** | ✅ | `call_stream` (Anthropic + OpenAI wire) + `chat-update` events + cancel |
-| **Provider abstraction** | ✅ | `provider.rs`: enum + test_connection/list_models per provider |
-| **Test Connection** | ✅ | Settings → Claude → Test Connection |
-| **Permissions (READ/WRITE/EXECUTE/…)** | ✅ | `tool_permissions` per tool (`ask/allow/deny`) + Settings UI |
-| PowerShell / filesystem / Git / automation | ✅ | `execute_powershell`, file tools, `git_*`, screenshot, clipboard, open_application |
-| Weekly recap | ✅ | opt-in log → provider summary |
-| **Spotify Connector** | ✅ | `spotify.rs`: OAuth PKCE-S256 (loopback `http://127.0.0.1:8000`, state-guarded), tokens di Credential Manager, tools `spotify_*` (current/search/play/pause/next/prev/queue) |
+| Slot | Wire | Tools | Web search |
+|---|---|---|---|
+| `aicoding` (default) | Anthropic `/v1/messages` to `https://partner.api-github.com` | **Yes** (local tools via approval card) | **No** (omitted on AICODING wire) |
+| `anthropic` (Claude) | Anthropic `/v1/messages` | **Yes** (same local tools) | **Yes** (Anthropic wire only) |
+| `openai`/`google`/`openrouter` | OpenAI-compatible | No | No |
+| `ollama`/`lmstudio` + custom OpenAI-compatible | OpenAI-compatible (streamed) | No | No |
 
-### Catatan penting (keputusan sebelumnya)
-- Chat saat ini memakai **format Anthropic `/v1/messages`** (bukan
-  OpenAI `/v1/chat/completions`). AICODING menjawab kedua-duanya; kita sudah
-  memverifikasi `/v1/messages` + `tool_use`/`tool_result` + `fetch_models`.
-- Base URL default `https://partner.api-github.com`, model default `sonnet-5`.
-- Dokumen: `%LOCALAPPDATA%\Coucou\bin\coucou_read.py` (stdlib-only).
+Defaults: `chatProvider = "aicoding"`, `model = "sonnet-5"` (AICODING), Claude uses `claude-opus-5`/`sonnet-5` as configured. Models fetched per provider when selected (with key present).
 
-## 4. Alur request → tool (sekarang)
+## 4. Local chat tools (`chat_tools.rs`)
 
-```
-island chat.ts  ──invoke──▶  Rust chat_send
-                                 │
-                                 ▼
-                        claude::send()
-                        loop:
-                          POST {base}/v1/messages
-                             │
-                   ◀── no tool_use ──▶ hasil final
-                             │ tool_use
-                             ▼
-                        approve() → pipe::ask_chat_tool (kartu approval di island)
-                             │ allow
-                             ▼
-                        run_tool()  (read/write/list/python/web)
-                             │ result
-                             ▼  (balik ke loop)
-```
+**10 tools** are exposed to AICODING and Claude. Every call requires approval via the island card (reads included). `spotify_ready()` returns the translated error `"Not connected to Spotify — connect it in Settings."` when Spotify is not connected.
 
-Permission: **semua tool menampilkan card Allow/Deny** melalui `pipe::ask_chat_tool`
-(payload `coucou_chat: true`, `subject: "Mochi"`), kartu reuse dari Claude Code
-approval. Tidak ada pengecualian per-kategori.
+| Tool | Required | Optional | Purpose |
+|---|---|---|---|
+| `read_file` | `file_path` | — | Read a file |
+| `write_file` | `file_path`, `content` | — | Write/overwrite a file |
+| `list_dir` | `path` | — | List directory contents |
+| `run_powershell` | `command` | — | Run PowerShell 5.1 command |
+| `run_python` | `code` | — | Run Python code |
+| `spotify_now` | — | — | Get current playback (title/artist/track/playlist context) |
+| `spotify_search` | `query` | `type` = `"track"`\|`"playlist"` | Search Spotify |
+| `spotify_play` | — | `uri` | Play by `uri`, or **resume** if `uri` is empty |
+| `spotify_pause` | — | — | Pause playback |
+| `spotify_next` | — | — | Next track |
+| `spotify_previous` | — | — | Previous track |
+| `spotify_queue` | — | `uri` | Add `uri` to queue |
 
-## 5. Alur file drop (sekarang)
+`execute()` handles all 10 arms before the fallback; `display_input()` builds a concise one-line summary for the approval card (uses `uri`/`query`/`file_path`/`path`/`command`/`code`). The approval registry carries `pillId = "agent_aicoding"` for chat tool requests.
 
-```
-drag ke island → Rust ingest (files.rs) → State.droppedFile
-   → prompt view chip → chat_send dengan ChatContext::File
-   → claude.rs file_block(base64) / text inline → ke provider
-```
+## 5. Tool loop & wires (`claude.rs`)
 
-## 6. Rekomendasi arsitektur target (fase bertahap)
+- `Wire::Aicoding`: base `https://partner.api-github.com`, auth `Bearer <aic-…>`, omits `"web_search"` tool and omits `"fallbacks"` field (server-side web_search unusable).
+- `Wire::Anthropic`: base `https://api.anthropic.com`, auth `x-api-key`, includes `"web_search"` tool (at index 0) and `"fallbacks"` when applicable.
+- `tools_for(wire)`: returns `chat_tools::defs()` unioned with Anthropic-only `web_search` (inserted at index 0). No filtering — new tools flow to both wires automatically.
+- `TOOLS_NOTE` (appended to system prompt): lists all 10 tools + note about Spotify connector. No test asserts its exact content.
+- `send_with(app, wire, chat, model, query, context)`: posts `/v1/messages`, loops while response contains `tool_use`:
+  - approve via `pipe::ask_chat_tool` (creates island approval card) with `session_id = "chat"`, `coucou_agent = "aicoding"`, `request_id = "chat-<pid>-<n>"`
+  - on Allow → `chat_tools::execute(tool, input, tx)` returns `tool_result`
+  - on Deny/timeout → result omitted (request not sent back as executed) and loop continues/ends per policy
+- Max tool rounds: **8** (`MAX_ROUNDS = 8`).
+- File context: dropped files become `ChatContext::File { name, path }` → sent as text (`File: <name>\n\n<query>`) or as `file_block` for PDFs/images when supported by the wire/path handling.
 
-Fase 1: **Streaming** di `claude.rs` (SSE `/v1/messages?stream=true` atau
-`/v1/chat/completions?stream=true`), channel ke frontend, `cancel`.
+## 6. Approval flow (island/frontend)
 
-Fase 2: **Provider abstraction** — bungkus `claude.rs` jadi trait
-`AIProvider { chat, stream, list_models, test_connection }`; implementasi
-`AICodingProvider` (dan slot Anthropic/OpenAI/Google/Ollama nol). Provider
-pilihan masuk Settings.
+- `CHAT_AGENT = "aicoding"` (`windows/src/island/agents.ts`), `APPROVAL_AGENTS` includes `"codex","copilot","muse"` (relay/pure values; chat tools use `agent_aicoding` pill id).
+- `TOOL_LABELS` maps tool names (including `spotify_*`) to translated labels (`N_("*")`).
+- `stepLabel()` builds card title: `search` → `"Searches · <query>"`, `play` with `uri` → `"Plays · <uri>"` (truncated), `queue` with `uri` → `"Queues · <uri>"`, bare → bare label.
+- `APPROVAL_FIELDS` includes `"uri"` (after `"url"`).
+- Auto-decline: different `pending.requestId`, paused island, or unknown agent.
+- Timeouts: frontend drops card at **110 s**; Rust backstop `APPROVAL_WAIT` **120 s**.
+- Approval requests use ids `chat-<pid>-<n>`, `session_id: "chat"`, `coucou_agent: "aicoding"`. Denying a chat tool request (`pending.pillId === "agent_aicoding"`) triggers `dropPendingCard` decline path.
 
-Fase 3: **Settings** — section AI Providers + Test Connection + Permissions +
-Privacy (mengikuti desain settings existing).
+## 7. Spotify connector
 
-Fase 4: **Tool registry + permission levels** — tiap tool dideklarasi dengan
-level (READ/WRITE/EXECUTE/DESTRUCTIVE/NETWORK/SYSTEM); permission manager
-menentukan card/auto.
+- OAuth **PKCE-S256**, loopback `http://127.0.0.1:8000`, state-guarded, CSRF protection.
+- Tokens stored in Credential Manager (`secrets.rs`). `connected()` checks token validity/expiry.
+- API fns: `current_music`, `search_tracks`, `search_playlists`, `play(uri)` — empty `uri` = **resume** (uses `None` body), `pause`, `next_track`, `previous_track`, `queue(uri)`.
+- Chat tools call these directly after `spotify_ready()` gate.
+- Settings: **Settings → Spotify** (separate section). Error strings reference "connect it in Settings." (not "Settings → Connectors").
 
-Fase 5–7: Filesystem lengkap, `execute_powershell`, Git, coding agent.
+## 8. Translations (i18n)
 
-Fase 8+: Windows automation (screenshot, clipboard, app control, browser),
-weekly recap (opt-in, kolektor lokal + AICODING).
+- `strings.json`: MAC catalog (`_generated`, `languages`, `strings: {key:{lang:str}}`) — generated by `scripts/gen-strings.mjs`, never hand-edit.
+- `extra.json`: Windows/Linux-only keys (`strings` with 9 non-English languages, no `en`), 1-space indent. Must not shadow MAC keys; every key used in code; placeholders equal per language.
+- Rust: `t(key)` (single arg), `tf(key, &[("name", val)])` for placeholders. Frontend: `t/tl/N_/tn`.
+- `tests/i18n.test.mjs`: "every string translated" checks `usedKeys` (Rust `t(`/`tf(` in `src-tauri/`, excludes `#[cfg(test)] mod tests` via comment stripping); flags raw translated keys as literals in CHECKED dirs (`src/views`, `src/settings`, `src/island`, `src/upload`, `src/recap`, `src/mochi/wardrobe.ts`, `src/main.ts`), exempting `t(`/`N_(` calls. `NOT_TEXT = {file, finished, unknown, Resend}`.
+- New Spotify labels: `Now playing`, `Plays`, `Next track`, `Previous track`, `Queues`, `Not connected to Spotify — connect it in Settings.` (6 keys × 9). `Searches` and `Pause` reused.
 
-## 7. Keamanan (aturan repo yang dipertahankan)
+## 9. Streaming & non-tool chat
 
-- API key **hanya** di Credential Manager/Keyring; frontend hanya tahu `present`.
-- Tidak ada telemetri; request keluar hanya ke provider yang dikonfigurasi.
-- Semua operasi destructive butuh konfirmasi eksplisit.
-- Tidak pernah `DELETE`/`commit`/`push` tanpa klik.
+- Local models (`ollama`/`lmstudio`/OpenAI-compatible): answers streamed via SSE (`stream: true`), `chat-delta` events emitted to island (`WINDOW_LABEL`), `<think>` blocks hidden.
+- OpenAI/Google/OpenRouter: handled by `openai_compat.rs` (non-streaming paths where applicable; streaming exists for local/OpenAI-compatible). AICODING/Claude use Anthropic `/v1/messages` (non-streaming tool loop; streaming for plain answers is provider-dependent as implemented).
+- Switching providers mid-conversation carries history as plain text only.
+
+## 10. Security & rules
+
+- Secrets only in Credential Manager/Keyring (`secrets.rs`, `secrets::KNOWN_KEYS`). Never written to disk/git.
+- No telemetry. Network calls only to configured services.
+- Every destructive/local action requires explicit Allow via island card.
+- Never commit without asking (repo has many uncommitted files). No fake features; no restyling of shipped views.
+- Pill IDs stable. `APPROVAL_AGENTS`/`CHAT_AGENT` are contract values.
+- tokio has no `macros` feature (tests use manual runtime builder). Tests set `HOME_VAR`/`USERPROFILE` explicitly when cwd-sensitive.
+- PowerShell 5.1 quirks noted (use `cmd /c "… 2>&1"`; avoid complex inline `node -e` quoting — write temp scripts; `findstr` not `find /i`; `rg` may be absent — use grep).
+
+## 11. Test status (as of Phase 2)
+
+- `cargo test --lib` → **210 passed, 0 failed** (warnings cleared)
+- `npx tsc --noEmit` → clean
+- `npm test` → **318 passed, 0 failed**
+
+Key additions: 2 new `chat_tools.rs` tests (`the_spotify_tools_are_offered_with_their_fields`, `spotify_calls_carry_what_the_card_shows`), 2 new `hooks.test.mjs` tests (Spotify labels + card naming).
+
+## 12. Quick verification
+
+- Chat → ask AICODING to `read_file` a small text file: approval card appears with label+fields, Allow runs, result returned, Stop pill appears. Deny omits result.
+- Spotify not connected: `spotify_now` returns translated "Not connected to Spotify — connect it in Settings."
+- Spotify connected: `spotify_search {"query":"daft punk","type":"track"}` shows card `Searches · daft punk`, Allow queues/plays via backend. `spotify_play {}` resumes.
+- Approval timeout (110 s frontend / 120 s Rust) auto-declines.

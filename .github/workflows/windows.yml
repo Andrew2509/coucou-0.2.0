@@ -12,12 +12,13 @@ on:
 permissions:
   contents: write
 
-# Publishing is paused: Defender flags the unsigned installer as
-# Trojan:Win32/Wacatac.H!ml (false positive, reported to Microsoft). Tags still
-# build, to check the app compiles, but nothing is uploaded. Set this back to
-# 'true' once the installer is signed or the detection is cleared.
+# Publishing is on: Microsoft reviewed the Defender false positive
+# (Trojan:Win32/Wacatac.H!ml) and removed the detection. Before pushing a
+# windows-v* tag, run this workflow by hand and scan the artifacts with Defender:
+# a new unsigned build can still trip its machine-learning model. Set this to
+# 'false' to build tags without publishing.
 env:
-  PUBLISH: 'false'
+  PUBLISH: 'true'
 
 jobs:
   build:
