@@ -69,7 +69,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
 
   let sending = false;
-  let renderedCount = -1;
+  let lastSignature = "";
 
   async function submit() {
     const query = input.value.trim();
@@ -161,9 +161,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       }
 
       const thinking = State.stateOverride === "thinking";
-      const count = State.chatHistory.length + (thinking ? 0.5 : 0);
-      if (count !== renderedCount) {
-        renderedCount = count;
+      // Re-render whenever the set of messages or any of their contents change.
+      // During streaming the count stays the same while `pending.content` grows,
+      // so counting messages alone would freeze the bubble after the first frame.
+      const signature =
+        State.chatHistory.map((m) => `${m.id}:${m.role}:${m.content.length}`).join("|") +
+        `|t=${thinking ? 1 : 0}`;
+      if (signature !== lastSignature) {
+        lastSignature = signature;
         clear(log);
         for (const m of State.chatHistory) log.append(bubble(m));
         if (thinking) log.append(typingDots());

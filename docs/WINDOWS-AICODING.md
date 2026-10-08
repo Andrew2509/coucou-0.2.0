@@ -53,6 +53,7 @@ coucou-0.2.0/
 | **Permissions (READ/WRITE/EXECUTE/…)** | ✅ | `tool_permissions` per tool (`ask/allow/deny`) + Settings UI |
 | PowerShell / filesystem / Git / automation | ✅ | `execute_powershell`, file tools, `git_*`, screenshot, clipboard, open_application |
 | Weekly recap | ✅ | opt-in log → provider summary |
+| **Spotify Connector** | ✅ | `spotify.rs`: OAuth PKCE-S256 (loopback `http://127.0.0.1:8000`, state-guarded), tokens di Credential Manager, tools `spotify_*` (current/search/play/pause/next/prev/queue) |
 
 ### Catatan penting (keputusan sebelumnya)
 - Chat saat ini memakai **format Anthropic `/v1/messages`** (bukan

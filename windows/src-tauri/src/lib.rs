@@ -11,6 +11,7 @@ mod platform;
 mod provider;
 mod secrets;
 mod settings;
+mod spotify;
 mod tray;
 
 use std::process::Command;
@@ -282,6 +283,24 @@ fn chat_cancel(shared: State<Shared>) {
     shared.chat_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Spotify connector (Settings → Connectors). `spotify_connect` opens the
+/// browser and waits on the loopback callback; no secret crosses Rust → JS.
+#[tauri::command]
+async fn spotify_connect(app: AppHandle) -> Result<(), String> {
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    crate::spotify::start_auth(&app, cancel).await
+}
+
+#[tauri::command]
+fn spotify_disconnect() -> Result<(), String> {
+    crate::spotify::disconnect()
+}
+
+#[tauri::command]
+fn spotify_status() -> bool {
+    crate::spotify::connected()
+}
+
 /// Weekly recap (opt-in): summarises the last 7 days of local tool activity
 /// through the configured provider and returns the recap text.
 #[tauri::command]
@@ -478,6 +497,9 @@ pub fn run() {
             fetch_models,
             test_connection,
             weekly_recap,
+            spotify_connect,
+            spotify_disconnect,
+            spotify_status,
             ingest_file,
             secret_present,
             secret_set,

@@ -867,6 +867,69 @@ fn tools() -> Value {
                 },
                 "required": ["content"]
             }
+        },
+        {
+            "name": "spotify_current",
+            "description": "What is playing on the user's Spotify right now: track, artists, position, device.",
+            "input_schema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "spotify_search",
+            "description": "Search Spotify for tracks by name and return the top 5 with their URIs.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Track or artist to search for." }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "spotify_search_playlist",
+            "description": "Search the user's Spotify for playlists and return the top 5 with their URIs.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Playlist name to search for." }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "spotify_play",
+            "description": "Start playback of a Spotify URI (spotify:track:…, spotify:playlist:…, spotify:album:…). Needs an active device.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "uri": { "type": "string", "description": "A Spotify URI from spotify_search." }
+                },
+                "required": ["uri"]
+            }
+        },
+        {
+            "name": "spotify_pause",
+            "description": "Pause Spotify.",
+            "input_schema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "spotify_next",
+            "description": "Skip to the next track.",
+            "input_schema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "spotify_previous",
+            "description": "Go back to the previous track.",
+            "input_schema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "spotify_queue",
+            "description": "Read the upcoming queue, or add a URI to it when 'uri' is given.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "uri": { "type": "string", "description": "Optional track URI to enqueue." }
+                }
+            }
         }
     ])
 }
@@ -880,7 +943,9 @@ async fn run_tool(app: &AppHandle, name: &str, input: &Value) -> (Value, bool) {
             | "copy_file" | "delete_file" | "search_files" | "run_python" | "execute_powershell"
             | "web_search" | "git_status" | "git_diff" | "git_log" | "git_branch"
             | "git_checkout" | "git_add" | "git_commit" | "screenshot" | "open_application"
-            | "clipboard_read" | "clipboard_write"
+            | "clipboard_read" | "clipboard_write" | "spotify_current" | "spotify_search"
+            | "spotify_play" | "spotify_pause" | "spotify_next" | "spotify_previous"
+            | "spotify_queue" | "spotify_search_playlist"
     ) {
         return (json!(format!("Unknown tool: {name}")), true);
     }
@@ -897,7 +962,14 @@ async fn run_tool(app: &AppHandle, name: &str, input: &Value) -> (Value, bool) {
         .unwrap_or_default();
     log_activity(app, name, &preview);
 
-    let outcome = if name == "web_search" {
+    let outcome = if name.starts_with("spotify_") {
+        let name = name.to_string();
+        let input = input.clone();
+        match dispatch_spotify(&name, &input).await {
+            Ok(text) => Ok(text),
+            Err(err) => Err(err),
+        }
+    } else if name == "web_search" {
         let query = input
             .get("query")
             .and_then(Value::as_str)
@@ -925,6 +997,41 @@ async fn run_tool(app: &AppHandle, name: &str, input: &Value) -> (Value, bool) {
 
 /// The file and Python tools are disk-and-CPU work, so they run on a worker
 /// thread; the search tool is the only one that wants the async HTTP client.
+
+/// Spotify connector tools — every call needs the user's OAuth consent, which
+/// the approval card already showed; there is nothing local to run.
+async fn dispatch_spotify(name: &str, input: &Value) -> Result<String, String> {
+    let str_arg = |field: &str| {
+        input
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    crate::spotify::access_token().await?;
+    match name {
+        "spotify_current" => crate::spotify::current_music().await,
+        "spotify_search" => {
+            let q = str_arg("query").ok_or_else(|| "No query given.".to_string())?;
+            crate::spotify::search_tracks(&q).await
+        }
+        "spotify_search_playlist" => {
+            let q = str_arg("query").ok_or_else(|| "No query given.".to_string())?;
+            crate::spotify::search_playlists(&q).await
+        }
+        "spotify_play" => {
+            let uri = str_arg("uri").ok_or_else(|| "No track URI given.".to_string())?;
+            crate::spotify::play(&uri).await
+        }
+        "spotify_pause" => crate::spotify::pause().await,
+        "spotify_next" => crate::spotify::next_track().await,
+        "spotify_previous" => crate::spotify::previous_track().await,
+        "spotify_queue" => crate::spotify::queue(str_arg("uri")).await,
+        _ => Err("Unknown Spotify tool.".into()),
+    }
+}
+
 fn dispatch_local(name: &str, input: &Value) -> Result<String, String> {
     let str_arg = |field: &str| {
         input
@@ -1874,7 +1981,7 @@ fn resolve_search_url(href: &str) -> String {
     href.to_string()
 }
 
-fn percent_encode(text: &str) -> String {
+pub(crate) fn percent_encode(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for byte in text.as_bytes() {
         match byte {

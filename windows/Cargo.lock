@@ -612,13 +612,16 @@ dependencies = [
 name = "coucou"
 version = "0.1.1"
 dependencies = [
+ "base64 0.22.1",
  "futures-util",
+ "getrandom 0.2.17",
  "gtk",
  "keyring",
  "libc",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

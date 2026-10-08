@@ -608,6 +608,71 @@ function privacySection(): HTMLElement {
   return h("section", {}, h("h2", {}, h("span", { text: "Privacy" })), wrap);
 }
 
+// ── Connectors section ────────────────────────────────────────────────────────
+
+function connectorsSection(): HTMLElement {
+  const wrap = h("div", { style: "display:flex;flex-direction:column;gap:10px" });
+  const status = h("span", { class: "hint", text: "…" });
+  const clientField = h("input", {
+    type: "text",
+    placeholder: "Spotify Client ID",
+    style: "flex:1 1 auto;min-width:0",
+    spellcheck: "false",
+  }) as HTMLInputElement;
+  const connectBtn = h("button", { class: "primary", text: "Connect", disabled: true });
+  const disconnectBtn = h("button", { class: "danger", text: "Disconnect" });
+
+  async function refresh() {
+    const connected = await Bridge.spotifyStatus();
+    const haveClient = (await Bridge.secretPresent("spotify-client-id")) ?? false;
+    status.textContent = connected
+      ? "Connected — ask Mochi to play something."
+      : haveClient
+        ? "Credentials saved. Not connected yet."
+        : "Paste your Spotify Client ID below to connect.";
+    status.style.color = connected ? "#22c55e" : "";
+    connectBtn.disabled = !haveClient || connected;
+    disconnectBtn.style.display = connected ? "" : "none";
+    clientField.value = "";
+    clientField.placeholder = haveClient ? "Client ID stored" : "Spotify Client ID";
+  }
+
+  clientField.addEventListener("change", () => {
+    if (!clientField.value.trim()) return;
+    void Bridge.secretSet("spotify-client-id", clientField.value.trim()).then(refresh);
+  });
+
+  connectBtn.addEventListener("click", async () => {
+    connectBtn.disabled = true;
+    status.textContent = "Waiting for the Spotify login in your browser…";
+    try {
+      await Bridge.spotifyConnect();
+      status.textContent = "Connected!";
+      status.style.color = "#22c55e";
+    } catch (err) {
+      status.textContent = String(err).replace(/^Error:\s*/, "");
+      status.style.color = "#f4505e";
+    } finally {
+      void refresh();
+    }
+  });
+
+  disconnectBtn.addEventListener("click", async () => {
+    await Bridge.spotifyDisconnect();
+    void refresh();
+  });
+
+  wrap.append(
+    h("div", { class: "hint", text: "Tools the chat can call through their modern APIs. Spotify playback control needs a premium account; searching and 'what is playing' do not." }),
+    h("div", { class: "row" },
+      h("label", { text: "Spotify" }),
+      clientField, connectBtn, disconnectBtn, status,
+    ),
+  );
+  void refresh();
+  return h("section", {}, h("h2", {}, h("span", { text: "Connectors" })), wrap);
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -635,6 +700,7 @@ async function main() {
     claudeSection(status),
     apiSection(hasKey),
     integrationsSection(present),
+    connectorsSection(),
     permissionsSection(),
     privacySection(),
     generalSection(),

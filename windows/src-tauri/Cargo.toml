@@ -22,6 +22,11 @@ serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["net", "io-util", "sync", "time", "rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 futures-util = "0.3"
+# OS CSPRNG for the PKCE verifier / state nonce. No extra platform logic needed.
+getrandom = "0.2"
+# PKCE code_challenge = base64url(SHA-256(verifier)). Spotify only supports S256.
+sha2 = "0.10"
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

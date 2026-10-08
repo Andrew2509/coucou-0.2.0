@@ -16,6 +16,10 @@ pub const KNOWN_KEYS: &[&str] = &[
     "resend-api-key",
     "notion-api-key",
     "calcom-api-key",
+    "spotify-client-id",
+    "spotify-access-token",
+    "spotify-refresh-token",
+    "spotify-token-expiry",
 ];
 
 fn entry(key: &str) -> Option<Entry> {

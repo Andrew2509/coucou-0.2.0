@@ -107,6 +107,14 @@ Optional **weekly recap** (Settings → Privacy → Run weekly recap): with the
 toggle on, Coucou records *which* tool ran and *where* (never file contents) for
 seven days, then asks the provider for a short summary.
 
+**Connectors** (Settings → Connectors): Spotify connects through OAuth 2.0 with
+PKCE — paste a Client ID from the Spotify Developer Dashboard, sign in in the
+browser, and Mochi can search tracks/playlists, play, pause, skip, read the
+current track and manage the queue. Tokens live in the Credential Manager, never
+on disk. Playback control needs Spotify Premium (Spotify enforces that); search
+and "what is playing" do not. AICODING stays the brain — Spotify is only a tool
+it can call.
+
 No telemetry. The only network requests Coucou makes are to the services you
 configure yourself.
 

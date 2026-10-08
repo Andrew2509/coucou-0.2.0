@@ -95,6 +95,11 @@ export const Bridge = {
   testConnection: () => callOrThrow<void>("test_connection"),
   /** Weekly recap (opt-in): the summary text, or an honest error when empty. */
   weeklyRecap: () => callOrThrow<string>("weekly_recap"),
+  /** Spotify connector. `spotifyConnect` opens the browser and waits for the
+   *  loopback callback; `spotifyStatus` is true once tokens are stored. */
+  spotifyConnect: () => callOrThrow<void>("spotify_connect"),
+  spotifyDisconnect: () => callOrThrow<void>("spotify_disconnect"),
+  spotifyStatus: () => callOrThrow<boolean>("spotify_status").catch(() => false),
   /** Copies a dropped file into the inbox. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
   /** Only ever tells you whether a key exists — never its value. */
