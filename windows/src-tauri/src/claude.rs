@@ -220,7 +220,7 @@ pub async fn send(
 }
 
 /// The line appended to the system prompt whenever local tools are offered.
-const TOOLS_NOTE: &str = " Local tools are available: read_file, write_file, list_dir, run_powershell, run_python, and Spotify control (spotify_now, spotify_search, spotify_play, spotify_pause, spotify_next, spotify_previous, spotify_queue — the Spotify tools need the connector set up in Settings). Every call asks the user for permission first; when a call is denied, answer without it instead of asking again.";
+pub const TOOLS_NOTE: &str = " Local tools are available: read_file, write_file, list_dir, run_powershell, run_python, and Spotify control (spotify_now, spotify_search, spotify_play, spotify_pause, spotify_next, spotify_previous, spotify_queue — the Spotify tools need the connector set up in Settings). Every call asks the user for permission first; when a call is denied, answer without it instead of asking again.";
 
 /// One chat turn on a given Anthropic-wire gateway (Anthropic or AICODING),
 /// with this fork's agentic loop: the model may call local tools, each call

@@ -3,8 +3,9 @@
 // OpenRouter. One table describes them; one client talks to all three.
 //
 // Same contract as claude.rs: the key never leaves the credential store and
-// file bytes never cross the IPC boundary. Chat only — no tools are sent, so
-// the model can answer but never act on the machine.
+// file bytes never cross the IPC boundary. Tools (read/write/list/run_python/run_powershell/spotify_*)
+// are sent to models that support them, and every call requires explicit
+// approval from the island's card before execution.
 
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::chat::{self, Chat, ChatContext, ChatReply, ModelInfo};
 use crate::i18n::{t, tf};
-use crate::{net, secrets};
+use crate::{chat_tools, net, secrets};
 
 pub struct Provider {
     pub id: &'static str,
@@ -108,17 +109,29 @@ fn user_message(first: bool, context: Option<&ChatContext>, query: &str) -> Valu
     }
 }
 
-fn request_body(p: &Provider, model: &str, system: &str, history: &[Value], user: &Value) -> Value {
+fn request_body(
+    p: &Provider,
+    model: &str,
+    system: &str,
+    history: &[Value],
+    user: &Value,
+    tools: &Value,
+) -> Value {
     let mut messages = vec![json!({ "role": "system", "content": system })];
     messages.extend(history.iter().cloned());
     messages.push(user.clone());
     let mut body = json!({ "model": model, "messages": messages });
     body[p.max_tokens_field] = json!(MAX_TOKENS);
+    if tools.as_array().is_some_and(|t| !t.is_empty()) {
+        body["tools"] = tools.clone();
+        body["tool_choice"] = json!("auto");
+    }
     body
 }
 
 /// The answer's text, or the error the provider put in a 200 reply
 /// (OpenRouter does when the upstream model fails).
+#[cfg(test)]
 fn reply_text(p: &Provider, response: &Value) -> Result<String, String> {
     let text = response
         .pointer("/choices/0/message/content")
@@ -153,6 +166,7 @@ fn status_error(p: &Provider, status: u16, detail: &str) -> String {
 
 /// One chat turn with a cloud provider.
 pub async fn send(
+    app: &tauri::AppHandle,
     chat: &Chat,
     p: &'static Provider,
     model: &str,
@@ -165,28 +179,147 @@ pub async fn send(
     }
     let turn = chat.begin(p.id);
     let user = user_message(turn.first, context.as_ref(), &query);
-    let body = request_body(p, model, &chat::system_prompt(false), &turn.history, &user);
+    let _plain = chat::plain_question(turn.first, context.as_ref(), &query);
+    let mut system = chat::system_prompt(false);
+    system.push_str(crate::claude::TOOLS_NOTE);
+    let tools = chat_tools::defs_openai();
 
-    let endpoint = url(p, "chat/completions")?;
-    let response = net::client(&endpoint, Duration::from_secs(90))?
-        .post(endpoint)
-        .bearer_auth(&key)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| tf("Network error: {error}", &[("error", &e.to_string())]))?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = net::read_capped(response, net::MAX_ERROR_BODY).await.unwrap_or_default();
-        return Err(status_error(p, status.as_u16(), &net::error_detail(&body)));
+    let mut messages = vec![user.clone()];
+    let mut last_text = String::new();
+    let mut used_tools = false;
+    let mut failure: Option<String> = None;
+
+    for _ in 0..=chat_tools::MAX_ROUNDS {
+        let mut all = turn.history.clone();
+        all.extend(messages.iter().cloned());
+        let body = request_body(p, model, &system, &all, &user, &tools);
+
+        let endpoint = url(p, "chat/completions")?;
+        let response = net::client(&endpoint, Duration::from_secs(90))?
+            .post(endpoint)
+            .bearer_auth(&key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| tf("Network error: {error}", &[("error", &e.to_string())]))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = net::read_capped(response, net::MAX_ERROR_BODY).await.unwrap_or_default();
+            failure = Some(status_error(p, status.as_u16(), &net::error_detail(&body)));
+            break;
+        }
+        let bytes = net::read_capped(response, net::MAX_BODY).await?;
+        let json: Value = serde_json::from_slice(&bytes)
+            .map_err(|e| tf("Bad API response: {error}", &[("error", &e.to_string())]))?;
+        let choice = json.pointer("/choices/0/message").cloned().unwrap_or(json!({}));
+
+        let content = choice
+            .get("content")
+            .and_then(|c| {
+                if c.is_null() {
+                    None
+                } else if let Some(s) = c.as_str() {
+                    Some(s.trim().to_string())
+                } else if let Some(arr) = c.as_array() {
+                    let mut out = String::new();
+                    for v in arr {
+                        if let Some(s) = v.as_str() {
+                            out.push_str(s);
+                        } else if let Some(t) = v.get("text").and_then(|x| x.as_str()) {
+                            out.push_str(t);
+                        }
+                    }
+                    let out = out.trim().to_string();
+                    if out.is_empty() { None } else { Some(out) }
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        if !content.is_empty() {
+            last_text = content.clone();
+        }
+
+        let tool_calls = choice
+            .get("tool_calls")
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if tool_calls.is_empty() {
+            let plain = chat::plain_question(turn.first, context.as_ref(), &query);
+            let assistant = choice.get("content").cloned().unwrap_or(json!(content.clone()));
+            chat.commit(&turn, user.clone(), json!({ "role": "assistant", "content": assistant }), &plain, &content);
+            if used_tools {
+                chat_tools::finish(app, &content, true);
+            }
+            return Ok(ChatReply { text: content });
+        }
+
+        used_tools = true;
+        let mut tool_results: Vec<Value> = Vec::new();
+        for tc in tool_calls {
+            let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let function = tc.get("function").cloned().unwrap_or(json!({}));
+            let name = function.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let args_str = function.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
+            let input: Value = serde_json::from_str(args_str).unwrap_or_else(|_| json!({}));
+
+            let _ = chat_tools::step(app, "PreToolUse", &name, &input);
+            let display = chat_tools::display_input(&name, &input);
+            let allowed = chat_tools::approve(app, &name, &display).await;
+            if allowed {
+                match chat_tools::execute(&name, &input).await {
+                    Ok(res) => {
+                        let _ = chat_tools::step(app, "PostToolUse", &name, &input);
+                        tool_results.push(json!({
+                            "tool_call_id": id,
+                            "role": "tool",
+                            "name": name,
+                            "content": res
+                        }));
+                    }
+                    Err(e) => {
+                        let _ = chat_tools::step(app, "PostToolUseFailure", &name, &input);
+                        tool_results.push(json!({
+                            "tool_call_id": id,
+                            "role": "tool",
+                            "name": name,
+                            "content": e
+                        }));
+                    }
+                }
+            } else {
+                let _ = chat_tools::step(app, "PostToolUseFailure", &name, &input);
+                tool_results.push(json!({
+                    "tool_call_id": id,
+                    "role": "tool",
+                    "name": name,
+                    "content": "Denied by user."
+                }));
+            }
+        }
+
+        for tr in tool_results {
+            messages.push(tr);
+        }
     }
-    let bytes = net::read_capped(response, net::MAX_BODY).await?;
-    let json: Value = serde_json::from_slice(&bytes).map_err(|e| tf("Bad API response: {error}", &[("error", &e.to_string())]))?;
-    let text = reply_text(p, &json)?;
 
-    let plain = chat::plain_question(turn.first, context.as_ref(), &query);
-    chat.commit(&turn, user, json!({ "role": "assistant", "content": text }), &plain, &text);
-    Ok(ChatReply { text })
+    if let Some(e) = failure {
+        return Err(e);
+    }
+    if !last_text.is_empty() {
+        let plain = chat::plain_question(turn.first, context.as_ref(), &query);
+        chat.commit_messages(&turn, &messages, &plain, &last_text);
+        if used_tools {
+            chat_tools::finish(app, &last_text, true);
+        }
+        return Ok(ChatReply { text: last_text });
+    }
+    Err(tf(
+        "Stopped after {max} tool rounds without a final answer.",
+        &[("max", &chat_tools::MAX_ROUNDS.to_string())],
+    ))
 }
 
 /// The provider's chat models. Only ever asked with the user's key, once they
@@ -319,7 +452,7 @@ mod tests {
         let history = vec![json!({"role":"user","content":"a"}), json!({"role":"assistant","content":"b"})];
         let user = user_message(false, None, "c");
         assert_eq!(user, json!({"role":"user","content":"c"}));
-        let body = request_body(p("google"), "gemini-x", "sys", &history, &user);
+        let body = request_body(p("google"), "gemini-x", "sys", &history, &user, &json!([]));
         assert_eq!(body["model"], "gemini-x");
         assert_eq!(body["max_tokens"], MAX_TOKENS);
         let msgs = body["messages"].as_array().unwrap();
@@ -328,7 +461,7 @@ mod tests {
         assert_eq!(msgs[3], user);
         assert!(body.get("tools").is_none(), "chat only: no tools");
         // OpenAI's reasoning models refuse the old field name.
-        let body = request_body(p("openai"), "gpt-5", "sys", &[], &user);
+        let body = request_body(p("openai"), "gpt-5", "sys", &[], &user, &json!([]));
         assert_eq!(body["max_completion_tokens"], MAX_TOKENS);
         assert!(body.get("max_tokens").is_none());
     }

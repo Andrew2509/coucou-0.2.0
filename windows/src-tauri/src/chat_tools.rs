@@ -55,8 +55,27 @@ fn default_cwd() -> PathBuf {
 
 /// The tool definitions the model is offered. Names and fields are the ones
 /// the island's approval card knows how to show (`command`, `file_path`,
-/// `path`, `query`, `uri` — see APPROVAL_FIELDS in the island's hooks).
+/// `path`, `query`, `uri` ??? see APPROVAL_FIELDS in the island's hooks).
 pub fn defs() -> Value {
+    defs_raw()
+}
+
+/// Same tool definitions for Anthropic Messages (tool_choice and tool_result).
+pub fn defs_openai() -> Value {
+    let mut v = defs_raw();
+    if let Some(arr) = v.as_array_mut() {
+        for t in arr.iter_mut() {
+            if let Some(obj) = t.as_object_mut() {
+                if let Some(schema) = obj.remove("input_schema") {
+                    obj.insert("parameters".to_string(), schema);
+                }
+            }
+        }
+    }
+    v
+}
+
+fn defs_raw() -> Value {
     json!([
         {
             "name": "read_file",

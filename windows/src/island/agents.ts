@@ -26,7 +26,7 @@ export const KNOWN_AGENTS: Record<string, KnownAgent> = {
  * Must match `takes_decisions` in the relay (hook/src/reply.rs): any other
  * agent's request is handed straight back to its terminal.
  */
-export const APPROVAL_AGENTS = new Set(["codex", "copilot", "muse"]);
+export const APPROVAL_AGENTS = new Set(["codex", "copilot", "muse", "opencode"]);
 
 /**
  * This fork's own chat: its tool calls get the same card, answered straight
